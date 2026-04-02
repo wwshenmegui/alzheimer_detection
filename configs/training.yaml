@@ -1,0 +1,48 @@
+ingestion:
+  dataset_root: data/raw/alzheimers_multiclass
+  output_manifest: data/processed/manifest.csv
+  download: false
+  dataset_handle: aryansinghal10/alzheimers-multiclass-dataset-equal-and-augmented
+  allowed_extensions:
+    - .jpg
+    - .jpeg
+    - .png
+  label_to_id:
+    NonDemented: 0
+    VeryMildDemented: 1
+    MildDemented: 2
+    ModerateDemented: 3
+
+validation:
+  manifest_path: data/processed/manifest.csv
+  output_report: data/reports/validation_report.json
+  approved_manifest: data/processed/validated_manifest.csv
+  label_to_id:
+    NonDemented: 0
+    VeryMildDemented: 1
+    MildDemented: 2
+    ModerateDemented: 3
+
+features:
+  validated_manifest: data/processed/validated_manifest.csv
+  output_features: data/processed/features.npz
+  output_report: data/reports/features_report.json
+  image_size:
+    - 128
+    - 128
+  split_ratios:
+    - 0.6
+    - 0.2
+    - 0.2
+  split_random_state: 42
+
+model:
+  input_features: data/processed/features.npz
+  output_model: models/trained/logistic_regression.pkl
+  output_report: data/reports/training_report.json
+  max_iter: 500
+
+evaluation:
+  input_features: data/processed/features.npz
+  input_model: models/trained/logistic_regression.pkl
+  output_report: data/reports/evaluation_report.json

@@ -1,0 +1,6 @@
+kagglehub
+numpy
+Pillow
+PyYAML
+pytest
+scikit-learn
