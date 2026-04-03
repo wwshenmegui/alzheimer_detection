@@ -3,9 +3,24 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from shared.data_quality import (
+    DEFAULT_ASPECT_RATIO_RANGE,
+    DEFAULT_DUPLICATE_HASH_DISTANCE,
+    DEFAULT_MIN_CENTER_BORDER_DIFF,
+    DEFAULT_MIN_IMAGE_SIZE,
+    DEFAULT_MIN_STDDEV,
+    assign_duplicate_groups,
+    extract_patient_id,
+    inspect_image_path,
+    summarize_duplicates,
+    validate_mri_image_metadata,
+)
 
 
 DEFAULT_LABEL_TO_ID = {
@@ -18,7 +33,31 @@ DEFAULT_LABEL_TO_ID = {
 DEFAULT_DATASET_HANDLE = "aryansinghal10/alzheimers-multiclass-dataset-equal-and-augmented"
 DEFAULT_ALLOWED_EXTENSIONS = (".jpg", ".jpeg", ".png")
 DEFAULT_CONFIG_PATH = Path("configs/training.yaml")
-MANIFEST_COLUMNS = ("sample_id", "image_path", "label_name", "label_id")
+DEFAULT_INGESTION_REPORT_PATH = Path("data/reports/ingestion_summary.json")
+DEFAULT_DUPLICATE_REPORT_PATH = Path("data/reports/duplicate_report.csv")
+MANIFEST_COLUMNS = (
+    "sample_id",
+    "image_path",
+    "label_name",
+    "label_id",
+    "patient_id",
+    "group_id",
+    "duplicate_group_id",
+    "width",
+    "height",
+    "mode",
+    "image_format",
+    "file_size_bytes",
+    "mean_intensity",
+    "std_intensity",
+    "center_mean_intensity",
+    "border_mean_intensity",
+    "sha256",
+    "average_hash",
+    "mri_is_valid",
+    "mri_error_code",
+    "mri_message",
+)
 
 
 @dataclass
@@ -27,6 +66,14 @@ class IngestionConfig:
     output_manifest: Path
     label_to_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_LABEL_TO_ID))
     allowed_extensions: tuple[str, ...] = DEFAULT_ALLOWED_EXTENSIONS
+    output_report: Path = DEFAULT_INGESTION_REPORT_PATH
+    duplicate_report: Path = DEFAULT_DUPLICATE_REPORT_PATH
+    patient_id_regex: str | None = None
+    min_image_size: tuple[int, int] = DEFAULT_MIN_IMAGE_SIZE
+    aspect_ratio_range: tuple[float, float] = DEFAULT_ASPECT_RATIO_RANGE
+    min_stddev: float = DEFAULT_MIN_STDDEV
+    min_center_border_diff: float = DEFAULT_MIN_CENTER_BORDER_DIFF
+    duplicate_hash_distance: int = DEFAULT_DUPLICATE_HASH_DISTANCE
 
 
 def load_ingestion_settings(config_path: Path) -> dict[str, Any]:
@@ -95,17 +142,38 @@ def is_readable_image(file_path: Path) -> bool:
     return False
 
 
-def build_manifest(config: IngestionConfig) -> list[dict[str, str | int]]:
-    manifest: list[dict[str, str | int]] = []
+def build_manifest(config: IngestionConfig) -> list[dict[str, Any]]:
+    manifest, _ = build_manifest_with_report(config)
+    return manifest
+
+
+def build_manifest_with_report(config: IngestionConfig) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    manifest: list[dict[str, Any]] = []
     sample_number = 1
     dataset_root = resolve_dataset_root(config.dataset_root, config.label_to_id)
+    discovered_files = 0
+    skipped_unknown_label = 0
+    unreadable_files = 0
 
     for image_path in discover_image_files(dataset_root, config.allowed_extensions):
+        discovered_files += 1
         label_name = image_path.parent.name
         if label_name not in config.label_to_id:
+            skipped_unknown_label += 1
             continue
         if not is_readable_image(image_path):
+            unreadable_files += 1
             continue
+
+        metadata = inspect_image_path(image_path)
+        mri_feedback = validate_mri_image_metadata(
+            metadata,
+            min_image_size=config.min_image_size,
+            aspect_ratio_range=config.aspect_ratio_range,
+            min_stddev=config.min_stddev,
+            min_center_border_diff=config.min_center_border_diff,
+        )
+        patient_id = extract_patient_id(image_path, config.patient_id_regex)
 
         manifest.append(
             {
@@ -113,11 +181,43 @@ def build_manifest(config: IngestionConfig) -> list[dict[str, str | int]]:
                 "image_path": str(image_path.resolve()),
                 "label_name": label_name,
                 "label_id": config.label_to_id[label_name],
+                "patient_id": patient_id or "",
+                "group_id": "",
+                "duplicate_group_id": "",
+                "width": metadata["width"],
+                "height": metadata["height"],
+                "mode": metadata["mode"],
+                "image_format": metadata["image_format"],
+                "file_size_bytes": metadata["file_size_bytes"],
+                "mean_intensity": metadata["mean_intensity"],
+                "std_intensity": metadata["std_intensity"],
+                "center_mean_intensity": metadata["center_mean_intensity"],
+                "border_mean_intensity": metadata["border_mean_intensity"],
+                "sha256": metadata["sha256"],
+                "average_hash": metadata["average_hash"],
+                "mri_is_valid": str(mri_feedback.passed),
+                "mri_error_code": mri_feedback.error_code or "",
+                "mri_message": mri_feedback.message or "",
             }
         )
         sample_number += 1
 
-    return manifest
+    manifest = assign_duplicate_groups(manifest, max_hash_distance=config.duplicate_hash_distance)
+    mri_valid_count = sum(str(row.get("mri_is_valid", "")).lower() == "true" for row in manifest)
+    report = {
+        "passed": True,
+        "dataset_root": str(dataset_root),
+        "discovered_files": discovered_files,
+        "ingested_rows": len(manifest),
+        "unknown_label_files": skipped_unknown_label,
+        "unreadable_files": unreadable_files,
+        "class_distribution": dict(Counter(str(row["label_name"]) for row in manifest)),
+        "mri_valid_rows": mri_valid_count,
+        "mri_invalid_rows": len(manifest) - mri_valid_count,
+        "duplicate_summary": summarize_duplicates(manifest),
+        "patient_id_rows": sum(1 for row in manifest if row.get("patient_id")),
+    }
+    return manifest, report
 
 
 def save_manifest(rows: list[dict[str, str | int]], output_path: Path) -> None:
@@ -128,12 +228,38 @@ def save_manifest(rows: list[dict[str, str | int]], output_path: Path) -> None:
         writer.writerows(rows)
 
 
+def save_ingestion_report(report: dict[str, Any], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+
+
+def save_duplicate_report(rows: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_rows = [row for row in rows if row.get("duplicate_group_id")]
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("sample_id", "image_path", "label_name", "patient_id", "duplicate_group_id", "group_id", "sha256", "average_hash"),
+        )
+        writer.writeheader()
+        writer.writerows(duplicate_rows)
+
+
 def build_ingestion_config(
     *,
     dataset_root: Path | None,
     output_manifest: Path | None,
     label_to_id: dict[str, int] | None = None,
     allowed_extensions: tuple[str, ...] | None = None,
+    output_report: Path | None = DEFAULT_INGESTION_REPORT_PATH,
+    duplicate_report: Path | None = DEFAULT_DUPLICATE_REPORT_PATH,
+    patient_id_regex: str | None = None,
+    min_image_size: tuple[int, int] = DEFAULT_MIN_IMAGE_SIZE,
+    aspect_ratio_range: tuple[float, float] = DEFAULT_ASPECT_RATIO_RANGE,
+    min_stddev: float = DEFAULT_MIN_STDDEV,
+    min_center_border_diff: float = DEFAULT_MIN_CENTER_BORDER_DIFF,
+    duplicate_hash_distance: int = DEFAULT_DUPLICATE_HASH_DISTANCE,
 ) -> IngestionConfig:
     if dataset_root is None:
         raise ValueError("A dataset root is required to build ingestion config.")
@@ -145,6 +271,14 @@ def build_ingestion_config(
         output_manifest=output_manifest,
         label_to_id=label_to_id or dict(DEFAULT_LABEL_TO_ID),
         allowed_extensions=allowed_extensions or DEFAULT_ALLOWED_EXTENSIONS,
+        output_report=output_report or DEFAULT_INGESTION_REPORT_PATH,
+        duplicate_report=duplicate_report or DEFAULT_DUPLICATE_REPORT_PATH,
+        patient_id_regex=patient_id_regex,
+        min_image_size=min_image_size,
+        aspect_ratio_range=aspect_ratio_range,
+        min_stddev=min_stddev,
+        min_center_border_diff=min_center_border_diff,
+        duplicate_hash_distance=duplicate_hash_distance,
     )
 
 
@@ -157,6 +291,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset-root", help="Path to the raw dataset root.")
     parser.add_argument("--output-manifest", help="Path to the output CSV manifest.")
+    parser.add_argument("--output-report", help="Path to the output JSON ingestion summary report.")
+    parser.add_argument("--duplicate-report", help="Path to the output CSV duplicate report.")
     parser.add_argument(
         "--download",
         action="store_true",
@@ -178,8 +314,16 @@ def main() -> None:
     dataset_handle = args.dataset_handle or config_settings.get("dataset_handle", DEFAULT_DATASET_HANDLE)
     dataset_root_value = args.dataset_root or config_settings.get("dataset_root")
     output_manifest_value = args.output_manifest or config_settings.get("output_manifest")
+    output_report_value = args.output_report or config_settings.get("output_report") or str(DEFAULT_INGESTION_REPORT_PATH)
+    duplicate_report_value = args.duplicate_report or config_settings.get("duplicate_report") or str(DEFAULT_DUPLICATE_REPORT_PATH)
     allowed_extensions_value = tuple(config_settings.get("allowed_extensions", DEFAULT_ALLOWED_EXTENSIONS))
     label_to_id_value = config_settings.get("label_to_id", dict(DEFAULT_LABEL_TO_ID))
+    patient_id_regex_value = config_settings.get("patient_id_regex")
+    min_image_size_value = tuple(config_settings.get("min_image_size", list(DEFAULT_MIN_IMAGE_SIZE)))
+    aspect_ratio_range_value = tuple(config_settings.get("aspect_ratio_range", list(DEFAULT_ASPECT_RATIO_RANGE)))
+    min_stddev_value = float(config_settings.get("min_stddev", DEFAULT_MIN_STDDEV))
+    min_center_border_diff_value = float(config_settings.get("min_center_border_diff", DEFAULT_MIN_CENTER_BORDER_DIFF))
+    duplicate_hash_distance_value = int(config_settings.get("duplicate_hash_distance", DEFAULT_DUPLICATE_HASH_DISTANCE))
 
     dataset_root = Path(dataset_root_value) if dataset_root_value else None
     if download:
@@ -194,9 +338,19 @@ def main() -> None:
         output_manifest=Path(output_manifest_value),
         label_to_id={str(key): int(value) for key, value in label_to_id_value.items()},
         allowed_extensions=tuple(str(item) for item in allowed_extensions_value),
+        output_report=Path(output_report_value),
+        duplicate_report=Path(duplicate_report_value),
+        patient_id_regex=str(patient_id_regex_value) if patient_id_regex_value else None,
+        min_image_size=(int(min_image_size_value[0]), int(min_image_size_value[1])),
+        aspect_ratio_range=(float(aspect_ratio_range_value[0]), float(aspect_ratio_range_value[1])),
+        min_stddev=min_stddev_value,
+        min_center_border_diff=min_center_border_diff_value,
+        duplicate_hash_distance=duplicate_hash_distance_value,
     )
-    manifest = build_manifest(config)
+    manifest, report = build_manifest_with_report(config)
     save_manifest(manifest, config.output_manifest)
+    save_ingestion_report(report, config.output_report)
+    save_duplicate_report(manifest, config.duplicate_report)
 
 
 if __name__ == "__main__":

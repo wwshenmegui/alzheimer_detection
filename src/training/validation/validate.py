@@ -4,13 +4,13 @@ import argparse
 import csv
 import importlib
 import json
-import shutil
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from training.ingestion.ingest import DEFAULT_CONFIG_PATH, DEFAULT_LABEL_TO_ID
+from shared.data_quality import summarize_duplicates
+from training.ingestion.ingest import DEFAULT_CONFIG_PATH, DEFAULT_LABEL_TO_ID, MANIFEST_COLUMNS
 
 
 REQUIRED_MANIFEST_COLUMNS = ("sample_id", "image_path", "label_name", "label_id")
@@ -74,21 +74,29 @@ def load_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
 
 def validate_manifest_rows(rows: list[dict[str, str]], label_to_id: dict[str, int]) -> dict[str, Any]:
     errors: list[str] = []
+    warnings: list[str] = []
     class_distribution: Counter[str] = Counter()
     sample_ids: set[str] = set()
+    mri_invalid_rows = 0
+    patient_id_rows = 0
+    valid_rows: list[dict[str, str]] = []
 
     for index, row in enumerate(rows, start=2):
+        row_has_error = False
         for column in REQUIRED_MANIFEST_COLUMNS:
             if column not in row:
                 errors.append(f"Missing required column: {column}")
                 return {
                     "passed": False,
                     "errors": sorted(set(errors)),
+                    "warnings": warnings,
                     "total_rows": len(rows),
                     "class_distribution": {},
+                    "valid_rows": [],
                 }
             if not row[column]:
                 errors.append(f"Row {index} has an empty value for '{column}'.")
+                row_has_error = True
 
         sample_id = row.get("sample_id", "")
         image_path = row.get("image_path", "")
@@ -97,26 +105,53 @@ def validate_manifest_rows(rows: list[dict[str, str]], label_to_id: dict[str, in
 
         if sample_id in sample_ids:
             errors.append(f"Duplicate sample_id found: {sample_id}")
+            row_has_error = True
         sample_ids.add(sample_id)
 
         if image_path and not Path(image_path).exists():
             errors.append(f"Image path does not exist: {image_path}")
+            row_has_error = True
 
         if label_name not in label_to_id:
             errors.append(f"Invalid label_name '{label_name}' at row {index}.")
+            row_has_error = True
         else:
             expected_label_id = str(label_to_id[label_name])
             if label_id != expected_label_id:
                 errors.append(
                     f"Label mismatch at row {index}: label_name '{label_name}' expects label_id '{expected_label_id}', got '{label_id}'."
                 )
+                row_has_error = True
+        if row.get("patient_id"):
+            patient_id_rows += 1
+
+        if str(row.get("mri_is_valid", "True")).lower() != "true":
+            mri_invalid_rows += 1
+            warnings.append(
+                f"Row {index} failed MRI validation with code '{row.get('mri_error_code', '') or 'unknown'}'."
+            )
+            continue
+
+        if not row_has_error:
+            valid_rows.append(row)
             class_distribution[label_name] += 1
+
+    duplicate_summary = summarize_duplicates(rows)
+    if duplicate_summary["exact_duplicate_groups"]:
+        warnings.append(f"Detected {duplicate_summary['exact_duplicate_groups']} exact duplicate groups.")
+    if duplicate_summary["near_duplicate_groups"]:
+        warnings.append(f"Detected {duplicate_summary['near_duplicate_groups']} near-duplicate groups.")
 
     return {
         "passed": not errors,
         "errors": errors,
+        "warnings": sorted(set(warnings)),
         "total_rows": len(rows),
         "class_distribution": dict(class_distribution),
+        "duplicate_summary": duplicate_summary,
+        "mri_invalid_rows": mri_invalid_rows,
+        "patient_id_rows": patient_id_rows,
+        "valid_rows": valid_rows,
     }
 
 
@@ -126,11 +161,14 @@ def write_validation_report(report: dict[str, Any], output_report: Path) -> None
         json.dump(report, handle, indent=2, sort_keys=True)
 
 
-def save_validated_manifest(source_manifest: Path, approved_manifest: Path | None) -> None:
+def save_validated_manifest(rows: list[dict[str, str]], approved_manifest: Path | None) -> None:
     if approved_manifest is None:
         return
     approved_manifest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_manifest, approved_manifest)
+    with approved_manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def run_validation(config: ValidationConfig) -> dict[str, Any]:
@@ -138,8 +176,10 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
         report = {
             "passed": False,
             "errors": [f"Manifest file does not exist: {config.manifest_path}"],
+            "warnings": [],
             "total_rows": 0,
             "class_distribution": {},
+            "valid_rows": [],
         }
         write_validation_report(report, config.output_report)
         return report
@@ -153,8 +193,10 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
         report = {
             "passed": False,
             "errors": [f"Missing required columns: {', '.join(missing_columns)}"],
+            "warnings": [],
             "total_rows": len(rows),
             "class_distribution": {},
+            "valid_rows": [],
         }
         write_validation_report(report, config.output_report)
         return report
@@ -163,7 +205,7 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
     write_validation_report(report, config.output_report)
 
     if report["passed"]:
-        save_validated_manifest(config.manifest_path, config.approved_manifest)
+        save_validated_manifest(report["valid_rows"], config.approved_manifest)
 
     return report
 

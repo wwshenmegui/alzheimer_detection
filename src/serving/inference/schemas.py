@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -16,3 +18,10 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     model_name: str
     model_path: str
+
+
+class ErrorResponse(BaseModel):
+    error_code: str
+    message: str
+    user_action: str
+    details: dict[str, Any]

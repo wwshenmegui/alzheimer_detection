@@ -199,10 +199,10 @@ The current version is intentionally simple. Important improvements are still ne
 
 ### Data Quality And Validation
 
-- add duplicate and near-duplicate checks
-- add stronger MRI-specific validation rules
-- add patient-level leakage prevention if future datasets include patient identifiers
-- add richer dataset statistics and data quality reporting
+- ~~add duplicate and near-duplicate checks~~
+- ~~add stronger MRI-specific validation rules~~
+- ~~add patient-level leakage prevention if future datasets include patient identifiers~~
+- ~~add richer dataset statistics and data quality reporting~~
 
 ### Evaluation
 
@@ -217,7 +217,7 @@ The current version is intentionally simple. Important improvements are still ne
 - add authentication and request logging
 - add batch inference support
 - add structured error handling and monitoring
-- add a frontend or clinic-facing UI
+- ~~add a frontend or clinic-facing UI~~
 
 ### Engineering
 

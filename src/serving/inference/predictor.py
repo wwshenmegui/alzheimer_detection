@@ -9,6 +9,14 @@ from typing import Any
 
 import numpy as np
 
+from shared.data_quality import (
+    DEFAULT_ASPECT_RATIO_RANGE,
+    DEFAULT_MIN_CENTER_BORDER_DIFF,
+    DEFAULT_MIN_IMAGE_SIZE,
+    DEFAULT_MIN_STDDEV,
+    InputValidationError,
+    validate_mri_image_bytes,
+)
 from training.features.build_features import DEFAULT_IMAGE_SIZE
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH, DEFAULT_LABEL_TO_ID
 
@@ -27,6 +35,10 @@ class ServingConfig:
     port: int = 8000
     log_level: str = "INFO"
     label_to_id: dict[str, int] | None = None
+    min_image_size: tuple[int, int] = DEFAULT_MIN_IMAGE_SIZE
+    aspect_ratio_range: tuple[float, float] = DEFAULT_ASPECT_RATIO_RANGE
+    min_stddev: float = DEFAULT_MIN_STDDEV
+    min_center_border_diff: float = DEFAULT_MIN_CENTER_BORDER_DIFF
 
     @property
     def id_to_label(self) -> dict[int, str]:
@@ -70,6 +82,10 @@ def build_serving_config(
     port: int = 8000,
     log_level: str = "INFO",
     label_to_id: dict[str, int] | None = None,
+    min_image_size: tuple[int, int] = DEFAULT_MIN_IMAGE_SIZE,
+    aspect_ratio_range: tuple[float, float] = DEFAULT_ASPECT_RATIO_RANGE,
+    min_stddev: float = DEFAULT_MIN_STDDEV,
+    min_center_border_diff: float = DEFAULT_MIN_CENTER_BORDER_DIFF,
 ) -> ServingConfig:
     if model_path is None:
         raise ValueError("A model path is required to build serving config.")
@@ -81,6 +97,10 @@ def build_serving_config(
         port=port,
         log_level=log_level,
         label_to_id=label_to_id or dict(DEFAULT_LABEL_TO_ID),
+        min_image_size=min_image_size,
+        aspect_ratio_range=aspect_ratio_range,
+        min_stddev=min_stddev,
+        min_center_border_diff=min_center_border_diff,
     )
 
 
@@ -96,6 +116,16 @@ class ModelPredictor:
             return pickle.load(handle)
 
     def predict_bytes(self, image_bytes: bytes) -> PredictionResponse:
+        feedback, _ = validate_mri_image_bytes(
+            image_bytes,
+            min_image_size=self.config.min_image_size,
+            aspect_ratio_range=self.config.aspect_ratio_range,
+            min_stddev=self.config.min_stddev,
+            min_center_border_diff=self.config.min_center_border_diff,
+        )
+        if not feedback.passed:
+            raise InputValidationError(feedback)
+
         features = preprocess_uploaded_image(image_bytes, self.config.image_size)
         probabilities = self.model.predict_proba(features)[0]
         predicted_index = int(np.argmax(probabilities))
@@ -120,6 +150,8 @@ def create_predictor(config_path: Path = DEFAULT_CONFIG_PATH, config: ServingCon
     if config is None:
         settings = load_serving_settings(config_path)
         image_size_value = settings.get("image_size", list(DEFAULT_IMAGE_SIZE))
+        min_image_size_value = settings.get("min_image_size", list(DEFAULT_MIN_IMAGE_SIZE))
+        aspect_ratio_range_value = settings.get("aspect_ratio_range", list(DEFAULT_ASPECT_RATIO_RANGE))
         config = build_serving_config(
             model_path=Path(settings.get("model_path")) if settings.get("model_path") else None,
             image_size=(int(image_size_value[0]), int(image_size_value[1])),
@@ -127,6 +159,10 @@ def create_predictor(config_path: Path = DEFAULT_CONFIG_PATH, config: ServingCon
             port=int(settings.get("port", 8000)),
             log_level=str(settings.get("log_level", "INFO")),
             label_to_id={str(key): int(value) for key, value in settings.get("label_to_id", dict(DEFAULT_LABEL_TO_ID)).items()},
+            min_image_size=(int(min_image_size_value[0]), int(min_image_size_value[1])),
+            aspect_ratio_range=(float(aspect_ratio_range_value[0]), float(aspect_ratio_range_value[1])),
+            min_stddev=float(settings.get("min_stddev", DEFAULT_MIN_STDDEV)),
+            min_center_border_diff=float(settings.get("min_center_border_diff", DEFAULT_MIN_CENTER_BORDER_DIFF)),
         )
     configure_logging(config.log_level)
     return ModelPredictor(config)

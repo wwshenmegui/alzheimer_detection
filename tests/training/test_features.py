@@ -47,7 +47,7 @@ def test_preprocess_image_returns_grayscale_tensor(tmp_path: Path) -> None:
 
 def test_run_feature_build_creates_npz_and_report(tmp_path: Path) -> None:
     manifest_path = tmp_path / "validated_manifest.csv"
-    lines = ["sample_id,image_path,label_name,label_id"]
+    lines = ["sample_id,image_path,label_name,label_id,group_id"]
     sample_number = 1
     for label_name, label_id, color in [
         ("NonDemented", 0, 32),
@@ -58,7 +58,7 @@ def test_run_feature_build_creates_npz_and_report(tmp_path: Path) -> None:
         for class_index in range(5):
             image_path = tmp_path / "images" / label_name / f"scan_{class_index}.png"
             create_test_image(image_path, size=(10, 10), color=color + class_index)
-            lines.append(f"sample_{sample_number:05d},{image_path},{label_name},{label_id}")
+            lines.append(f"sample_{sample_number:05d},{image_path},{label_name},{label_id},sample_{sample_number:05d}")
             sample_number += 1
     write_manifest(manifest_path, "\n".join(lines) + "\n")
 
@@ -94,8 +94,9 @@ def test_run_feature_build_creates_npz_and_report(tmp_path: Path) -> None:
 
 def test_assign_splits_creates_6_2_2_partition() -> None:
     labels = np.asarray([0] * 5 + [1] * 5 + [2] * 5 + [3] * 5, dtype=np.int64)
+    group_ids = np.asarray([f"sample_{index:05d}" for index in range(labels.shape[0])])
 
-    splits = assign_splits(labels, (0.6, 0.2, 0.2), 42)
+    splits = assign_splits(labels, group_ids, (0.6, 0.2, 0.2), 42)
 
     unique, counts = np.unique(splits, return_counts=True)
     assert dict(zip(unique.tolist(), counts.tolist())) == {"test": 4, "train": 12, "validation": 4}

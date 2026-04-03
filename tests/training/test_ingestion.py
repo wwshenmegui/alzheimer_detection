@@ -5,6 +5,8 @@ import sys
 import types
 from pathlib import Path
 
+from PIL import Image
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -24,27 +26,21 @@ from training.ingestion.ingest import (
 )
 
 
-MINIMAL_PNG = (
-    b"\x89PNG\r\n\x1a\n"
-    b"\x00\x00\x00\rIHDR"
-    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
-    b"\x90wS\xde"
-    b"\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01"
-    b"\xe2!\xbc3"
-    b"\x00\x00\x00\x00IEND\xaeB`\x82"
-)
-
-
 def write_file(file_path: Path, content: bytes) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(content)
 
 
+def create_test_image(file_path: Path, *, image_format: str = "PNG", size: tuple[int, int] = (128, 128), color: int = 128) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("L", size=size, color=color).save(file_path, format=image_format)
+
+
 def test_build_manifest_includes_only_known_readable_images(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
-    write_file(dataset_root / "NonDemented" / "scan_1.png", MINIMAL_PNG)
-    write_file(dataset_root / "MildDemented" / "scan_2.jpg", b"\xff\xd8\xfftest-jpeg")
-    write_file(dataset_root / "UnknownLabel" / "scan_3.png", MINIMAL_PNG)
+    create_test_image(dataset_root / "NonDemented" / "scan_1.png", image_format="PNG")
+    create_test_image(dataset_root / "MildDemented" / "scan_2.jpg", image_format="JPEG")
+    create_test_image(dataset_root / "UnknownLabel" / "scan_3.png", image_format="PNG")
     write_file(dataset_root / "VeryMildDemented" / "broken.png", b"not-an-image")
 
     config = IngestionConfig(
@@ -61,6 +57,8 @@ def test_build_manifest_includes_only_known_readable_images(tmp_path: Path) -> N
     assert manifest[1]["sample_id"] == "sample_00002"
     assert manifest[1]["label_name"] == "NonDemented"
     assert manifest[1]["label_id"] == 0
+    assert manifest[0]["group_id"]
+    assert manifest[1]["group_id"]
 
 
 def test_save_manifest_writes_csv(tmp_path: Path) -> None:
@@ -85,6 +83,23 @@ def test_save_manifest_writes_csv(tmp_path: Path) -> None:
             "image_path": "/tmp/example.png",
             "label_name": "NonDemented",
             "label_id": "0",
+            "patient_id": "",
+            "group_id": "",
+            "duplicate_group_id": "",
+            "width": "",
+            "height": "",
+            "mode": "",
+            "image_format": "",
+            "file_size_bytes": "",
+            "mean_intensity": "",
+            "std_intensity": "",
+            "center_mean_intensity": "",
+            "border_mean_intensity": "",
+            "sha256": "",
+            "average_hash": "",
+            "mri_is_valid": "",
+            "mri_error_code": "",
+            "mri_message": "",
         }
     ]
 

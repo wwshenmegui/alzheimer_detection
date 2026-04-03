@@ -123,6 +123,19 @@
       font-weight: 700;
     }
 
+    .result-title {
+      margin-bottom: 8px;
+      font-size: 1.08rem;
+    }
+
+    .result-help {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.96rem;
+      font-weight: 400;
+      line-height: 1.5;
+    }
+
     .error {
       color: #9f2d20;
     }
@@ -161,6 +174,11 @@
       ModerateDemented: 'Moderate Demented',
     };
 
+    function renderResult(title, helpText = '', isError = false) {
+      result.className = isError ? 'result error' : 'result';
+      result.innerHTML = `<div class="result-title">${title}</div>${helpText ? `<div class="result-help">${helpText}</div>` : ''}`;
+    }
+
     fileInput.addEventListener('change', () => {
       const [file] = fileInput.files;
       if (!file) {
@@ -179,8 +197,7 @@
       event.preventDefault();
 
       if (!fileInput.files.length) {
-        result.textContent = 'Please choose an image first.';
-        result.className = 'result error';
+        renderResult('No image selected', 'Please choose an MRI image first.', true);
         return;
       }
 
@@ -188,8 +205,7 @@
       formData.append('file', fileInput.files[0]);
 
       button.disabled = true;
-      result.textContent = 'Predicting...';
-      result.className = 'result';
+      renderResult('Predicting...');
 
       try {
         const response = await fetch('/predict', {
@@ -199,15 +215,16 @@
 
         const payload = await response.json();
         if (!response.ok) {
-          throw new Error(payload.detail || 'Prediction failed.');
+          const helpText = payload.user_action || payload.detail || 'Please try another MRI image.';
+          const message = payload.message || 'Prediction failed.';
+          throw new Error(`${message}|||${helpText}`);
         }
 
         const friendlySeverity = severityLabels[payload.predicted_label] || payload.predicted_label;
-        result.textContent = `Severity: ${friendlySeverity}`;
-        result.className = 'result';
+        renderResult(`Severity: ${friendlySeverity}`);
       } catch (error) {
-        result.textContent = error.message;
-        result.className = 'result error';
+        const [title, helpText] = String(error.message).split('|||');
+        renderResult(title, helpText || '', true);
       } finally {
         button.disabled = false;
       }

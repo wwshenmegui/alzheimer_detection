@@ -30,8 +30,8 @@ def test_run_validation_passes_for_valid_manifest(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.csv"
     write_manifest(
         manifest_path,
-        "sample_id,image_path,label_name,label_id\n"
-        f"sample_00001,{image_path},NonDemented,0\n",
+        "sample_id,image_path,label_name,label_id,patient_id,group_id,duplicate_group_id,width,height,mode,image_format,file_size_bytes,mean_intensity,std_intensity,center_mean_intensity,border_mean_intensity,sha256,average_hash,mri_is_valid,mri_error_code,mri_message\n"
+        f"sample_00001,{image_path},NonDemented,0,,sample_00001,,128,128,L,PNG,10,0.5,0.1,0.6,0.4,abc,hash,True,,\n",
     )
 
     report_path = tmp_path / "validation_report.json"
@@ -46,6 +46,7 @@ def test_run_validation_passes_for_valid_manifest(tmp_path: Path) -> None:
 
     assert report["passed"] is True
     assert report["errors"] == []
+    assert report["warnings"] == []
     assert report["total_rows"] == 1
     assert report["class_distribution"] == {"NonDemented": 1}
     assert approved_manifest.exists()
@@ -70,9 +71,9 @@ def test_run_validation_fails_for_invalid_rows(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.csv"
     write_manifest(
         manifest_path,
-        "sample_id,image_path,label_name,label_id\n"
-        f"sample_00001,{missing_image},WrongLabel,0\n"
-        f"sample_00001,{missing_image},NonDemented,9\n",
+        "sample_id,image_path,label_name,label_id,patient_id,group_id,duplicate_group_id,width,height,mode,image_format,file_size_bytes,mean_intensity,std_intensity,center_mean_intensity,border_mean_intensity,sha256,average_hash,mri_is_valid,mri_error_code,mri_message\n"
+        f"sample_00001,{missing_image},WrongLabel,0,,sample_00001,,128,128,L,PNG,10,0.5,0.1,0.6,0.4,abc,hash,True,,\n"
+        f"sample_00001,{missing_image},NonDemented,9,,sample_00001,,128,128,L,PNG,10,0.5,0.1,0.6,0.4,def,hash2,False,image_too_small,too small\n",
     )
 
     report_path = tmp_path / "validation_report.json"
@@ -89,6 +90,7 @@ def test_run_validation_fails_for_invalid_rows(tmp_path: Path) -> None:
     assert any("Invalid label_name 'WrongLabel'" in error for error in report["errors"])
     assert any("Duplicate sample_id found: sample_00001" in error for error in report["errors"])
     assert any("Label mismatch" in error for error in report["errors"])
+    assert any("failed MRI validation" in warning for warning in report["warnings"])
 
     saved_report = json.loads(report_path.read_text(encoding="utf-8"))
     assert saved_report["passed"] is False

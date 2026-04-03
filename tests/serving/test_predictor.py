@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from shared.data_quality import InputValidationError
 from serving.inference.predictor import ModelPredictor, build_serving_config
 from training.models.train import build_training_config, run_training
 
@@ -64,7 +66,10 @@ def train_model(tmp_path: Path) -> Path:
 
 
 def create_test_image_bytes(color: int = 180) -> bytes:
-    image = Image.new("L", (8, 8), color=color)
+    image = Image.new("L", (8, 8), color=20)
+    for x in range(2, 6):
+        for y in range(2, 6):
+            image.putpixel((x, y), color)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -76,6 +81,7 @@ def test_predictor_returns_prediction_response(tmp_path: Path) -> None:
         build_serving_config(
             model_path=model_path,
             image_size=(8, 8),
+            min_image_size=(8, 8),
         )
     )
 
@@ -95,3 +101,17 @@ def test_predictor_returns_prediction_response(tmp_path: Path) -> None:
         "ModerateDemented",
     }
     assert response.input_shape == [8, 8, 1]
+
+
+def test_predictor_rejects_non_mri_like_image(tmp_path: Path) -> None:
+    model_path = train_model(tmp_path)
+    predictor = ModelPredictor(build_serving_config(model_path=model_path, image_size=(8, 8), min_image_size=(8, 8)))
+
+    colorful = Image.new("RGB", (8, 8), color=(200, 200, 200))
+    buffer = io.BytesIO()
+    colorful.save(buffer, format="PNG")
+
+    with pytest.raises(InputValidationError) as exc_info:
+        predictor.predict_bytes(buffer.getvalue())
+
+    assert exc_info.value.feedback.error_code in {"low_signal_image", "non_mri_like_image"}

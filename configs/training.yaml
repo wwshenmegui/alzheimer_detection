@@ -1,12 +1,24 @@
 ingestion:
   dataset_root: data/raw/alzheimers_multiclass
   output_manifest: data/processed/manifest.csv
+  output_report: data/reports/ingestion_summary.json
+  duplicate_report: data/reports/duplicate_report.csv
   download: false
   dataset_handle: aryansinghal10/alzheimers-multiclass-dataset-equal-and-augmented
+  patient_id_regex: null
   allowed_extensions:
     - .jpg
     - .jpeg
     - .png
+  min_image_size:
+    - 128
+    - 128
+  aspect_ratio_range:
+    - 0.75
+    - 1.4
+  min_stddev: 0.03
+  min_center_border_diff: 0.02
+  duplicate_hash_distance: 6
   label_to_id:
     NonDemented: 0
     VeryMildDemented: 1
@@ -52,6 +64,14 @@ serving:
   image_size:
     - 128
     - 128
+  min_image_size:
+    - 128
+    - 128
+  aspect_ratio_range:
+    - 0.75
+    - 1.4
+  min_stddev: 0.03
+  min_center_border_diff: 0.02
   host: 127.0.0.1
   port: 8000
   log_level: INFO

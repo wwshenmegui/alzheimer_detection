@@ -62,11 +62,14 @@ def create_predictor(tmp_path: Path) -> ModelPredictor:
     )
     report = run_training(train_config)
     assert report["passed"] is True
-    return ModelPredictor(build_serving_config(model_path=model_path, image_size=(8, 8)))
+    return ModelPredictor(build_serving_config(model_path=model_path, image_size=(8, 8), min_image_size=(8, 8)))
 
 
 def create_png_bytes() -> bytes:
-    image = Image.new("L", (8, 8), color=200)
+    image = Image.new("L", (8, 8), color=20)
+    for x in range(2, 6):
+        for y in range(2, 6):
+            image.putpixel((x, y), 200)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -128,3 +131,24 @@ def test_predict_endpoint_rejects_non_image(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "unsupported_file_type"
+    assert "Please upload" in payload["user_action"]
+
+
+def test_predict_endpoint_reports_size_requirement(tmp_path: Path) -> None:
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+    tiny = Image.new("L", (4, 4), color=200)
+    buffer = io.BytesIO()
+    tiny.save(buffer, format="PNG")
+
+    response = client.post(
+        "/predict",
+        files={"file": ("tiny.png", buffer.getvalue(), "image/png")},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "image_too_small"
+    assert "at least" in payload["user_action"]
+    assert payload["details"]["minimum_width"] == 8

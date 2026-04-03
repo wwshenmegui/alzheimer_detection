@@ -90,10 +90,13 @@ def preprocess_image(image_path: Path, image_size: tuple[int, int]) -> np.ndarra
     return preprocess_image_path(image_path, image_size)
 
 
-def build_feature_dataset(rows: list[dict[str, str]], image_size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray, Counter[str]]:
+def build_feature_dataset(
+    rows: list[dict[str, str]], image_size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Counter[str]]:
     images: list[np.ndarray] = []
     labels: list[int] = []
     sample_ids: list[str] = []
+    group_ids: list[str] = []
     class_distribution: Counter[str] = Counter()
 
     for row in rows:
@@ -101,29 +104,46 @@ def build_feature_dataset(rows: list[dict[str, str]], image_size: tuple[int, int
         images.append(image_array)
         labels.append(int(row["label_id"]))
         sample_ids.append(row["sample_id"])
+        group_ids.append(row.get("group_id") or row["sample_id"])
         class_distribution[row["label_name"]] += 1
 
     return (
         np.stack(images).astype(np.float32),
         np.asarray(labels, dtype=np.int64),
         np.asarray(sample_ids),
+        np.asarray(group_ids),
         class_distribution,
     )
 
 
-def assign_splits(labels: np.ndarray, split_ratios: tuple[float, float, float], random_state: int) -> np.ndarray:
+def assign_splits(
+    labels: np.ndarray,
+    group_ids: np.ndarray,
+    split_ratios: tuple[float, float, float],
+    random_state: int,
+) -> np.ndarray:
     train_ratio, validation_ratio, test_ratio = split_ratios
     ratio_sum = train_ratio + validation_ratio + test_ratio
     if not np.isclose(ratio_sum, 1.0):
         raise ValueError("Split ratios must sum to 1.0.")
 
-    indices = np.arange(labels.shape[0])
+    unique_groups: list[str] = []
+    group_labels: list[int] = []
+    group_to_indices: dict[str, list[int]] = {}
+    for index, (group_id, label) in enumerate(zip(group_ids.tolist(), labels.tolist())):
+        group_to_indices.setdefault(str(group_id), []).append(index)
+        if str(group_id) not in unique_groups:
+            unique_groups.append(str(group_id))
+            group_labels.append(int(label))
+
+    indices = np.arange(len(unique_groups))
+    stratify_labels = np.asarray(group_labels, dtype=np.int64)
     temp_indices, test_indices, temp_labels, _ = train_test_split(
         indices,
-        labels,
+        stratify_labels,
         test_size=test_ratio,
         random_state=random_state,
-        stratify=labels,
+        stratify=stratify_labels,
     )
 
     validation_share_of_temp = validation_ratio / (train_ratio + validation_ratio)
@@ -135,9 +155,15 @@ def assign_splits(labels: np.ndarray, split_ratios: tuple[float, float, float], 
     )
 
     splits = np.empty(labels.shape[0], dtype="<U10")
-    splits[train_indices] = "train"
-    splits[validation_indices] = "validation"
-    splits[test_indices] = "test"
+    for group_index in train_indices.tolist():
+        for row_index in group_to_indices[unique_groups[group_index]]:
+            splits[row_index] = "train"
+    for group_index in validation_indices.tolist():
+        for row_index in group_to_indices[unique_groups[group_index]]:
+            splits[row_index] = "validation"
+    for group_index in test_indices.tolist():
+        for row_index in group_to_indices[unique_groups[group_index]]:
+            splits[row_index] = "test"
     return splits
 
 
@@ -197,8 +223,8 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
         return report
 
     try:
-        images, labels, sample_ids, class_distribution = build_feature_dataset(rows, config.image_size)
-        splits = assign_splits(labels, config.split_ratios, config.split_random_state)
+        images, labels, sample_ids, group_ids, class_distribution = build_feature_dataset(rows, config.image_size)
+        splits = assign_splits(labels, group_ids, config.split_ratios, config.split_random_state)
     except (FileNotFoundError, OSError, ValueError) as exc:
         report = {
             "passed": False,
@@ -214,6 +240,10 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
     save_feature_dataset(images, labels, sample_ids, splits, config.output_features)
 
     split_distribution = Counter(splits.tolist())
+    grouped_split_distribution: dict[str, int] = Counter()
+    unique_group_split_pairs = {(str(group_id), str(split)) for group_id, split in zip(group_ids.tolist(), splits.tolist())}
+    for _, split in unique_group_split_pairs:
+        grouped_split_distribution[split] += 1
 
     report = {
         "passed": True,
@@ -222,6 +252,7 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
         "image_shape": list(images.shape[1:]),
         "class_distribution": dict(class_distribution),
         "split_distribution": dict(split_distribution),
+        "group_split_distribution": dict(grouped_split_distribution),
         "output_features": str(config.output_features),
     }
     write_features_report(report, config.output_report)
