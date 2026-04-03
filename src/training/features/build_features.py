@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
 from sklearn.model_selection import train_test_split
 
+from shared.image_preprocessing import preprocess_image_path
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 
 
@@ -87,11 +87,7 @@ def load_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
 
 
 def preprocess_image(image_path: Path, image_size: tuple[int, int]) -> np.ndarray:
-    with Image.open(image_path) as image:
-        grayscale_image = image.convert("L")
-        resized_image = grayscale_image.resize(image_size)
-        image_array = np.asarray(resized_image, dtype=np.float32) / 255.0
-    return image_array[..., np.newaxis]
+    return preprocess_image_path(image_path, image_size)
 
 
 def build_feature_dataset(rows: list[dict[str, str]], image_size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray, Counter[str]]:

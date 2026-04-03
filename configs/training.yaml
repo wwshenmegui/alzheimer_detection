@@ -46,3 +46,17 @@ evaluation:
   input_features: data/processed/features.npz
   input_model: models/trained/logistic_regression.pkl
   output_report: data/reports/evaluation_report.json
+
+serving:
+  model_path: models/trained/logistic_regression.pkl
+  image_size:
+    - 128
+    - 128
+  host: 127.0.0.1
+  port: 8000
+  log_level: INFO
+  label_to_id:
+    NonDemented: 0
+    VeryMildDemented: 1
+    MildDemented: 2
+    ModerateDemented: 3

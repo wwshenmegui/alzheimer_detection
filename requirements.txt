@@ -1,6 +1,10 @@
+fastapi
+httpx
 kagglehub
 numpy
 Pillow
 PyYAML
 pytest
 scikit-learn
+python-multipart
+uvicorn
