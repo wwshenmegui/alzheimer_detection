@@ -83,6 +83,18 @@ def test_health_endpoint_returns_ok(tmp_path: Path) -> None:
     assert payload["model_loaded"] is True
 
 
+def test_root_endpoint_returns_ui_page(tmp_path: Path) -> None:
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Alzheimer Detection" in response.text
+    assert "Please upload an MRI image" in response.text
+    assert "Image preview" in response.text
+    assert "Predict" in response.text
+
+
 def test_predict_endpoint_returns_prediction(tmp_path: Path) -> None:
     client = TestClient(create_app(predictor=create_predictor(tmp_path)))
 

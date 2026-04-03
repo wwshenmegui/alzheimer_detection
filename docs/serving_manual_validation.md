@@ -34,6 +34,12 @@ python scripts/run_server.py \
   --log-level INFO
 ```
 
+If you want the dev server to refresh automatically when code changes:
+
+```bash
+python scripts/run_server.py --reload
+```
+
 ## Manual Checks
 
 Health check:
