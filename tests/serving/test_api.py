@@ -50,18 +50,25 @@ def create_feature_artifact(file_path: Path) -> None:
     )
 
 
-def create_predictor(tmp_path: Path) -> ModelPredictor:
+def train_versioned_model(tmp_path: Path, model_version: str) -> None:
     features_path = tmp_path / "features.npz"
-    create_feature_artifact(features_path)
+    if not features_path.exists():
+        create_feature_artifact(features_path)
     model_path = tmp_path / "model.pkl"
     train_config = build_training_config(
         input_features=features_path,
         output_model=model_path,
         output_report=tmp_path / "training_report.json",
         max_iter=300,
+        model_version=model_version,
     )
     report = run_training(train_config)
     assert report["passed"] is True
+
+
+def create_predictor(tmp_path: Path) -> ModelPredictor:
+    train_versioned_model(tmp_path, "v1")
+    model_path = tmp_path / "model.pkl"
     return ModelPredictor(build_serving_config(model_path=model_path, image_size=(8, 8), min_image_size=(8, 8)))
 
 
@@ -84,6 +91,56 @@ def test_health_endpoint_returns_ok(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["model_loaded"] is True
+    assert payload["model_version"] == "v1"
+
+
+def test_model_metadata_endpoint_returns_active_model_metadata(tmp_path: Path) -> None:
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+
+    response = client.get("/model")
+
+    assert response.status_code == 200
+    payload = response.json()["metadata"]
+    assert payload["model_version"] == "v1"
+    assert payload["model_name"] == "model"
+
+
+def test_models_endpoint_lists_registered_versions(tmp_path: Path) -> None:
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+
+    response = client.get("/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_model_version"] == "v1"
+    assert len(payload["models"]) == 1
+    assert payload["models"][0]["model_version"] == "v1"
+
+
+def test_activate_model_endpoint_switches_active_version(tmp_path: Path) -> None:
+    train_versioned_model(tmp_path, "v1")
+    train_versioned_model(tmp_path, "v2")
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+
+    response = client.post("/model/activate", json={"model_version": "v2"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["activated_model_version"] == "v2"
+    assert payload["metadata"]["model_version"] == "v2"
+
+    health_response = client.get("/health")
+    assert health_response.status_code == 200
+    assert health_response.json()["model_version"] == "v2"
+
+
+def test_activate_model_endpoint_rejects_missing_version(tmp_path: Path) -> None:
+    client = TestClient(create_app(predictor=create_predictor(tmp_path)))
+
+    response = client.post("/model/activate", json={"model_version": "v9"})
+
+    assert response.status_code == 404
+    assert "does not exist" in response.json()["detail"]
 
 
 def test_root_endpoint_returns_ui_page(tmp_path: Path) -> None:
@@ -120,6 +177,7 @@ def test_predict_endpoint_returns_prediction(tmp_path: Path) -> None:
         "MildDemented",
         "ModerateDemented",
     }
+    assert payload["model_version"] == "v1"
 
 
 def test_predict_endpoint_rejects_non_image(tmp_path: Path) -> None:

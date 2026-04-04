@@ -10,7 +10,15 @@ from shared.data_quality import InputValidationError, ValidationFeedback
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 
 from serving.inference.predictor import ModelPredictor, create_predictor
-from serving.inference.schemas import ErrorResponse, HealthResponse, PredictionResponse
+from serving.inference.schemas import (
+    ActivateModelRequest,
+    ActivateModelResponse,
+    ErrorResponse,
+    HealthResponse,
+    ModelCatalogResponse,
+    ModelMetadataResponse,
+    PredictionResponse,
+)
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -42,7 +50,33 @@ def create_app(
             status="ok",
             model_loaded=active_predictor.model is not None,
             model_name=type(active_predictor.model).__name__,
-            model_path=str(active_predictor.config.model_path),
+            model_path=str(active_predictor.model_path),
+            model_version=active_predictor.model_version,
+        )
+
+    @app.get("/model", response_model=ModelMetadataResponse)
+    def model_metadata() -> ModelMetadataResponse:
+        active_predictor: ModelPredictor = app.state.predictor
+        return ModelMetadataResponse(metadata=active_predictor.get_model_metadata())
+
+    @app.get("/models", response_model=ModelCatalogResponse)
+    def models() -> ModelCatalogResponse:
+        active_predictor: ModelPredictor = app.state.predictor
+        return ModelCatalogResponse(
+            active_model_version=active_predictor.model_version,
+            models=active_predictor.list_registered_models(),
+        )
+
+    @app.post("/model/activate", response_model=ActivateModelResponse)
+    def activate_model(request: ActivateModelRequest) -> ActivateModelResponse:
+        active_predictor: ModelPredictor = app.state.predictor
+        try:
+            metadata = active_predictor.activate_model_version(request.model_version)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return ActivateModelResponse(
+            activated_model_version=str(metadata.get("model_version", request.model_version)),
+            metadata=metadata,
         )
 
     @app.post("/predict", response_model=PredictionResponse)

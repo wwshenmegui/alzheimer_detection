@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
+from shared.model_registry import build_artifact_lineage, resolve_model_artifacts, update_model_metadata
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 from training.models.train import flatten_images, load_feature_artifact
 
@@ -90,6 +91,7 @@ def write_evaluation_report(report: dict[str, Any], output_report: Path) -> None
 
 def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
     LOGGER.info("Starting model evaluation")
+    resolved_model_path, metadata_path = resolve_model_artifacts(config.input_model)
 
     if not config.input_features.exists():
         report = {
@@ -101,19 +103,19 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         write_evaluation_report(report, config.output_report)
         return report
 
-    if not config.input_model.exists():
+    if not resolved_model_path.exists():
         report = {
             "passed": False,
-            "errors": [f"Model file does not exist: {config.input_model}"],
+            "errors": [f"Model file does not exist: {resolved_model_path}"],
             "validation_rows": 0,
         }
-        LOGGER.error("Model file does not exist: %s", config.input_model)
+        LOGGER.error("Model file does not exist: %s", resolved_model_path)
         write_evaluation_report(report, config.output_report)
         return report
 
     try:
         images, labels, sample_ids, splits = load_feature_artifact(config.input_features)
-        model = load_model(config.input_model)
+        model = load_model(resolved_model_path)
     except (KeyError, ValueError, OSError, pickle.PickleError) as exc:
         report = {
             "passed": False,
@@ -189,6 +191,18 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "test_sample_ids": [str(sample_id) for sample_id in test_ids.tolist()],
     }
     write_evaluation_report(report, config.output_report)
+    if metadata_path is not None and metadata_path.exists():
+        existing_lineage = (update_model_metadata(metadata_path, {}).get("lineage") or {})
+        update_model_metadata(
+            metadata_path,
+            {
+                "evaluation_report_path": str(config.output_report),
+                "lineage": {
+                    **existing_lineage,
+                    **build_artifact_lineage(artifact_path=config.output_report, artifact_key="evaluation_report"),
+                },
+            },
+        )
     LOGGER.info("Wrote evaluation report to %s", config.output_report)
     LOGGER.info("Evaluation accuracy: %.4f", accuracy)
     return report

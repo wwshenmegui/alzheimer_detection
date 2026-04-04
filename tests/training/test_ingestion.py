@@ -21,6 +21,7 @@ from training.ingestion.ingest import (
     download_dataset,
     load_ingestion_settings,
     resolve_dataset_root,
+    save_duplicate_report,
     save_manifest,
 )
 
@@ -99,6 +100,44 @@ def test_save_manifest_writes_csv(tmp_path: Path) -> None:
             "mri_is_valid": "",
             "mri_error_code": "",
             "mri_message": "",
+        }
+    ]
+
+
+def test_save_duplicate_report_ignores_extra_manifest_fields(tmp_path: Path) -> None:
+    output_path = tmp_path / "reports" / "duplicates.csv"
+    rows = [
+        {
+            "sample_id": "sample_00001",
+            "image_path": "/tmp/example.png",
+            "label_name": "NonDemented",
+            "label_id": 0,
+            "patient_id": "patient_1",
+            "group_id": "patient_1",
+            "duplicate_group_id": "exact_duplicate_00001",
+            "sha256": "abc123",
+            "average_hash": "0101",
+            "width": 128,
+            "height": 128,
+            "mri_is_valid": "True",
+        }
+    ]
+
+    save_duplicate_report(rows, output_path)
+
+    with output_path.open("r", newline="", encoding="utf-8") as handle:
+        saved_rows = list(csv.DictReader(handle))
+
+    assert saved_rows == [
+        {
+            "sample_id": "sample_00001",
+            "image_path": "/tmp/example.png",
+            "label_name": "NonDemented",
+            "patient_id": "patient_1",
+            "duplicate_group_id": "exact_duplicate_00001",
+            "group_id": "patient_1",
+            "sha256": "abc123",
+            "average_hash": "0101",
         }
     ]
 

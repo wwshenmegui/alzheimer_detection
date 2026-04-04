@@ -53,6 +53,8 @@ model:
   output_model: models/trained/logistic_regression.pkl
   output_report: data/reports/training_report.json
   max_iter: 500
+  model_name: alzheimer_detector
+  model_version: v1
 
 evaluation:
   input_features: data/processed/features.npz
@@ -61,6 +63,7 @@ evaluation:
 
 serving:
   model_path: models/trained/logistic_regression.pkl
+  model_name: alzheimer_detector
   image_size:
     - 128
     - 128

@@ -237,13 +237,26 @@ def save_ingestion_report(report: dict[str, Any], output_path: Path) -> None:
 def save_duplicate_report(rows: list[dict[str, Any]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     duplicate_rows = [row for row in rows if row.get("duplicate_group_id")]
+    fieldnames = (
+        "sample_id",
+        "image_path",
+        "label_name",
+        "patient_id",
+        "duplicate_group_id",
+        "group_id",
+        "sha256",
+        "average_hash",
+    )
     with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=("sample_id", "image_path", "label_name", "patient_id", "duplicate_group_id", "group_id", "sha256", "average_hash"),
-        )
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(duplicate_rows)
+        writer.writerows(
+            {
+                fieldname: row.get(fieldname, "")
+                for fieldname in fieldnames
+            }
+            for row in duplicate_rows
+        )
 
 
 def build_ingestion_config(

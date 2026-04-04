@@ -92,6 +92,12 @@ def test_run_evaluation_creates_report(tmp_path: Path) -> None:
     assert saved_report["passed"] is True
     assert len(saved_report["confusion_matrix"]) == len(saved_report["class_ids"])
 
+    metadata_path = tmp_path / "model" / "v1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["evaluation_report_path"] == str(report_path)
+    assert metadata["lineage"]["evaluation_report_path"] == str(report_path)
+    assert metadata["lineage"]["evaluation_report_sha256"]
+
 
 def test_run_evaluation_fails_for_missing_model(tmp_path: Path) -> None:
     features_path = tmp_path / "features.npz"

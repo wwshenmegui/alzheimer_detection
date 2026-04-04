@@ -101,6 +101,7 @@ def test_predictor_returns_prediction_response(tmp_path: Path) -> None:
         "ModerateDemented",
     }
     assert response.input_shape == [8, 8, 1]
+    assert response.model_version == "v1"
 
 
 def test_predictor_rejects_non_mri_like_image(tmp_path: Path) -> None:

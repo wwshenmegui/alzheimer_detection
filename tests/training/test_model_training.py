@@ -75,18 +75,34 @@ def test_run_training_creates_model_and_report(tmp_path: Path) -> None:
     report = run_training(config)
 
     assert report["passed"] is True
+    assert report["model_version"] == "v1"
+    assert report["model_name"] == "logistic_regression"
     assert report["train_rows"] == 8
     assert report["validation_rows"] == 4
     assert report["num_features"] == 64
-    assert output_model.exists()
+    saved_model_path = Path(report["output_model"])
+    metadata_path = Path(report["output_metadata"])
+    current_pointer = Path(report["current_pointer"])
+    assert saved_model_path.exists()
+    assert metadata_path.exists()
+    assert current_pointer.exists()
     assert output_report.exists()
 
-    with output_model.open("rb") as handle:
+    with saved_model_path.open("rb") as handle:
         model = pickle.load(handle)
     assert sorted(model.classes_.tolist()) == [0, 1, 2, 3]
 
     saved_report = json.loads(output_report.read_text(encoding="utf-8"))
     assert saved_report["passed"] is True
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["model_version"] == "v1"
+    assert metadata["model_name"] == "logistic_regression"
+    assert metadata["lineage"]["feature_artifact_path"] == str(features_path)
+    assert metadata["lineage"]["feature_artifact_sha256"]
+    assert metadata["lineage"]["model_artifact_sha256"]
+    assert metadata["lineage"]["training_report_path"] == str(output_report)
+    assert metadata["lineage"]["training_report_sha256"]
 
 
 def test_run_training_fails_for_missing_features(tmp_path: Path) -> None:

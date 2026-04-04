@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from shared.data_quality import (
     InputValidationError,
     validate_mri_image_bytes,
 )
+from shared.model_registry import activate_model_version, list_registered_models, load_model_metadata, resolve_model_artifacts
 from training.features.build_features import DEFAULT_IMAGE_SIZE
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH, DEFAULT_LABEL_TO_ID
 
@@ -30,6 +31,8 @@ LOGGER = logging.getLogger(__name__)
 @dataclass
 class ServingConfig:
     model_path: Path
+    model_name: str | None = None
+    model_version: str | None = None
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE
     host: str = "127.0.0.1"
     port: int = 8000
@@ -77,6 +80,8 @@ def load_serving_settings(config_path: Path) -> dict[str, Any]:
 def build_serving_config(
     *,
     model_path: Path | None,
+    model_name: str | None = None,
+    model_version: str | None = None,
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -92,6 +97,8 @@ def build_serving_config(
 
     return ServingConfig(
         model_path=model_path,
+        model_name=model_name,
+        model_version=model_version,
         image_size=image_size,
         host=host,
         port=port,
@@ -107,13 +114,53 @@ def build_serving_config(
 class ModelPredictor:
     def __init__(self, config: ServingConfig):
         self.config = config
-        self.model = self._load_model(config.model_path)
+        self.model_path, self.metadata_path = resolve_model_artifacts(
+            config.model_path,
+            model_version=config.model_version,
+            model_name=config.model_name,
+        )
+        self.model_metadata = load_model_metadata(self.metadata_path) or self._build_fallback_metadata()
+        self.model = self._load_model(self.model_path)
         self.id_to_label = config.id_to_label
 
     def _load_model(self, model_path: Path):
         LOGGER.info("Loading serving model from %s", model_path)
         with model_path.open("rb") as handle:
             return pickle.load(handle)
+
+    def _build_fallback_metadata(self) -> dict[str, Any]:
+        return {
+            "model_name": self.config.model_name or self.config.model_path.stem,
+            "model_version": self.config.model_version or "unversioned",
+            "model_type": "unknown",
+            "model_path": str(self.model_path),
+            "metadata_path": str(self.metadata_path) if self.metadata_path else "",
+        }
+
+    @property
+    def model_version(self) -> str:
+        return str(self.model_metadata.get("model_version", self.config.model_version or "unversioned"))
+
+    def get_model_metadata(self) -> dict[str, Any]:
+        return dict(self.model_metadata)
+
+    def list_registered_models(self) -> list[dict[str, Any]]:
+        return list_registered_models(self.config.model_path, model_name=self.config.model_name)
+
+    def activate_model_version(self, model_version: str) -> dict[str, Any]:
+        metadata = activate_model_version(
+            self.config.model_path,
+            model_version=model_version,
+            model_name=self.config.model_name,
+        )
+        refreshed = ModelPredictor(replace(self.config, model_version=None))
+        self.config = refreshed.config
+        self.model_path = refreshed.model_path
+        self.metadata_path = refreshed.metadata_path
+        self.model_metadata = refreshed.model_metadata
+        self.model = refreshed.model
+        self.id_to_label = refreshed.id_to_label
+        return metadata
 
     def predict_bytes(self, image_bytes: bytes) -> PredictionResponse:
         feedback, _ = validate_mri_image_bytes(
@@ -143,6 +190,7 @@ class ModelPredictor:
             probabilities=probability_map,
             input_shape=[self.config.image_size[0], self.config.image_size[1], 1],
             model_name=type(self.model).__name__,
+            model_version=self.model_version,
         )
 
 
@@ -154,6 +202,8 @@ def create_predictor(config_path: Path = DEFAULT_CONFIG_PATH, config: ServingCon
         aspect_ratio_range_value = settings.get("aspect_ratio_range", list(DEFAULT_ASPECT_RATIO_RANGE))
         config = build_serving_config(
             model_path=Path(settings.get("model_path")) if settings.get("model_path") else None,
+            model_name=str(settings.get("model_name")) if settings.get("model_name") else None,
+            model_version=str(settings.get("model_version")) if settings.get("model_version") else None,
             image_size=(int(image_size_value[0]), int(image_size_value[1])),
             host=str(settings.get("host", "127.0.0.1")),
             port=int(settings.get("port", 8000)),

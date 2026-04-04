@@ -19,6 +19,17 @@ from .data_quality import (
     validate_mri_image_bytes,
     validate_mri_image_metadata,
 )
+from .model_registry import (
+    DEFAULT_MODEL_VERSION,
+    derive_model_name,
+    list_registered_models,
+    load_model_metadata,
+    resolve_model_artifacts,
+    resolve_versioned_model_paths,
+    utc_timestamp,
+    write_current_version_pointer,
+    write_json_file,
+)
 
 __all__ = [
     "DEFAULT_ASPECT_RATIO_RANGE",
@@ -26,16 +37,25 @@ __all__ = [
     "DEFAULT_MIN_CENTER_BORDER_DIFF",
     "DEFAULT_MIN_IMAGE_SIZE",
     "DEFAULT_MIN_STDDEV",
+    "DEFAULT_MODEL_VERSION",
     "InputValidationError",
     "ValidationFeedback",
     "assign_duplicate_groups",
     "compute_sha256",
+    "derive_model_name",
     "extract_patient_id",
     "inspect_image_path",
+    "list_registered_models",
+    "load_model_metadata",
     "preprocess_image_bytes",
     "preprocess_image_path",
     "preprocess_pil_image",
+    "resolve_model_artifacts",
+    "resolve_versioned_model_paths",
     "summarize_duplicates",
+    "utc_timestamp",
     "validate_mri_image_bytes",
     "validate_mri_image_metadata",
+    "write_current_version_pointer",
+    "write_json_file",
 ]

@@ -163,6 +163,13 @@ Expected response fields:
 - `probabilities`
 - `input_shape`
 - `model_name`
+- `model_version`
+
+Model metadata endpoints:
+
+- `GET /model`
+- `GET /models`
+- `POST /model/activate`
 
 ## Workflow
 
@@ -220,7 +227,7 @@ The current version is intentionally simple. Important improvements are still ne
 
 ### Serving And Productization
 
-- add model versioning and model metadata endpoints
+- ~~add model versioning and model metadata endpoints~~
 - add authentication and request logging
 - add batch inference support
 - add structured error handling and monitoring

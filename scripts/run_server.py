@@ -55,6 +55,8 @@ def main() -> None:
     predictor = create_predictor(
         config=build_serving_config(
             model_path=Path(settings.get("model_path")) if settings.get("model_path") else None,
+            model_name=str(settings.get("model_name")) if settings.get("model_name") else None,
+            model_version=str(settings.get("model_version")) if settings.get("model_version") else None,
             image_size=(int(image_size_value[0]), int(image_size_value[1])),
             host=host,
             port=port,

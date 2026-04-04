@@ -13,6 +13,16 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 
+from shared.model_registry import (
+    build_artifact_lineage,
+    DEFAULT_MODEL_VERSION,
+    derive_model_name,
+    resolve_versioned_model_paths,
+    utc_timestamp,
+    update_model_metadata,
+    write_current_version_pointer,
+    write_json_file,
+)
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 
 
@@ -29,6 +39,8 @@ class ModelTrainingConfig:
     output_model: Path
     output_report: Path
     max_iter: int = 500
+    model_name: str | None = None
+    model_version: str = DEFAULT_MODEL_VERSION
 
 
 def configure_logging(log_level: str) -> None:
@@ -65,6 +77,8 @@ def build_training_config(
     output_model: Path | None,
     output_report: Path | None,
     max_iter: int = 500,
+    model_name: str | None = None,
+    model_version: str = DEFAULT_MODEL_VERSION,
 ) -> ModelTrainingConfig:
     if input_features is None:
         raise ValueError("An input features path is required to build training config.")
@@ -78,6 +92,8 @@ def build_training_config(
         output_model=output_model,
         output_report=output_report,
         max_iter=max_iter,
+        model_name=model_name,
+        model_version=model_version,
     )
 
 
@@ -100,6 +116,10 @@ def write_training_report(report: dict[str, Any], output_report: Path) -> None:
     output_report.parent.mkdir(parents=True, exist_ok=True)
     with output_report.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
+
+
+def write_model_metadata(metadata: dict[str, Any], output_path: Path) -> None:
+    write_json_file(metadata, output_path)
 
 
 def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
@@ -182,8 +202,45 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
     validation_accuracy = float(accuracy_score(validation_labels, validation_predictions))
     LOGGER.info("Validation accuracy: %.4f", validation_accuracy)
 
-    save_model(model, config.output_model)
-    LOGGER.info("Saved trained model to %s", config.output_model)
+    resolved_model_name = derive_model_name(config.output_model, config.model_name)
+    version_paths = resolve_versioned_model_paths(
+        config.output_model,
+        model_version=config.model_version,
+        model_name=resolved_model_name,
+    )
+
+    save_model(model, version_paths["model_path"])
+    LOGGER.info("Saved trained model to %s", version_paths["model_path"])
+
+    metadata = {
+        "model_name": resolved_model_name,
+        "model_version": config.model_version,
+        "model_type": type(model).__name__,
+        "model_path": str(version_paths["model_path"]),
+        "metadata_path": str(version_paths["metadata_path"]),
+        "training_report_path": str(config.output_report),
+        "feature_artifact_path": str(config.input_features),
+        "created_at": utc_timestamp(),
+        "validation_accuracy": validation_accuracy,
+        "train_rows": int(train_features.shape[0]),
+        "validation_rows": int(validation_features.shape[0]),
+        "num_features": int(train_features.shape[1]),
+        "classes": [int(class_id) for class_id in model.classes_],
+        "max_iter": int(config.max_iter),
+        "lineage": {
+            **build_artifact_lineage(artifact_path=config.input_features, artifact_key="feature_artifact"),
+            **build_artifact_lineage(artifact_path=version_paths["model_path"], artifact_key="model_artifact"),
+            "training_report_path": str(config.output_report),
+        },
+    }
+    write_model_metadata(metadata, version_paths["metadata_path"])
+    write_current_version_pointer(
+        version_paths["current_path"],
+        model_name=resolved_model_name,
+        model_version=config.model_version,
+        model_path=version_paths["model_path"],
+        metadata_path=version_paths["metadata_path"],
+    )
 
     report = {
         "passed": True,
@@ -193,11 +250,24 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
         "num_features": int(train_features.shape[1]),
         "validation_accuracy": validation_accuracy,
         "classes": [int(class_id) for class_id in model.classes_],
-        "output_model": str(config.output_model),
+        "model_name": resolved_model_name,
+        "model_version": config.model_version,
+        "output_model": str(version_paths["model_path"]),
+        "output_metadata": str(version_paths["metadata_path"]),
+        "current_pointer": str(version_paths["current_path"]),
         "train_sample_ids": [str(sample_id) for sample_id in train_ids.tolist()],
         "validation_sample_ids": [str(sample_id) for sample_id in validation_ids.tolist()],
     }
     write_training_report(report, config.output_report)
+    update_model_metadata(
+        version_paths["metadata_path"],
+        {
+            "lineage": {
+                **metadata["lineage"],
+                **build_artifact_lineage(artifact_path=config.output_report, artifact_key="training_report"),
+            }
+        },
+    )
     LOGGER.info("Wrote training report to %s", config.output_report)
     return report
 
@@ -209,6 +279,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-model", help="Path to the output pickled model.")
     parser.add_argument("--output-report", help="Path to the output JSON training report.")
     parser.add_argument("--max-iter", type=int, help="Maximum optimizer iterations for logistic regression.")
+    parser.add_argument("--model-name", help="Logical model name used for the versioned artifact directory.")
+    parser.add_argument("--model-version", help="Model version label, for example v1 or 2026-04-03.")
     parser.add_argument("--log-level", default="INFO", help="Logging level, for example DEBUG, INFO, WARNING.")
     return parser.parse_args()
 
@@ -222,12 +294,16 @@ def main() -> None:
     output_model_value = args.output_model or settings.get("output_model") or str(DEFAULT_MODEL_OUTPUT_PATH)
     output_report_value = args.output_report or settings.get("output_report") or str(DEFAULT_TRAINING_REPORT_PATH)
     max_iter_value = args.max_iter if args.max_iter is not None else int(settings.get("max_iter", 500))
+    model_name_value = args.model_name or settings.get("model_name")
+    model_version_value = args.model_version or settings.get("model_version", DEFAULT_MODEL_VERSION)
 
     config = build_training_config(
         input_features=Path(input_features_value) if input_features_value else None,
         output_model=Path(output_model_value) if output_model_value else None,
         output_report=Path(output_report_value) if output_report_value else None,
         max_iter=max_iter_value,
+        model_name=str(model_name_value) if model_name_value else None,
+        model_version=str(model_version_value),
     )
     report = run_training(config)
     if report["passed"]:
