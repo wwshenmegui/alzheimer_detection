@@ -4,6 +4,7 @@ import argparse
 import csv
 import importlib
 import json
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,9 @@ DEFAULT_SPLIT_RANDOM_STATE = 42
 REQUIRED_MANIFEST_COLUMNS = ("sample_id", "image_path", "label_name", "label_id")
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @dataclass
 class FeaturesConfig:
     validated_manifest: Path
@@ -32,6 +36,13 @@ class FeaturesConfig:
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE
     split_ratios: tuple[float, float, float] = DEFAULT_SPLIT_RATIOS
     split_random_state: int = DEFAULT_SPLIT_RANDOM_STATE
+
+
+def configure_logging(log_level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
 
 def load_feature_settings(config_path: Path) -> dict[str, Any]:
@@ -93,6 +104,7 @@ def preprocess_image(image_path: Path, image_size: tuple[int, int]) -> np.ndarra
 def build_feature_dataset(
     rows: list[dict[str, str]], image_size: tuple[int, int]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Counter[str]]:
+    LOGGER.info("Building feature dataset from %s validated rows", len(rows))
     images: list[np.ndarray] = []
     labels: list[int] = []
     sample_ids: list[str] = []
@@ -176,15 +188,18 @@ def save_feature_dataset(
 ) -> None:
     output_features.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output_features, images=images, labels=labels, sample_ids=sample_ids, splits=splits)
+    LOGGER.info("Saved feature artifact to %s", output_features)
 
 
 def write_features_report(report: dict[str, Any], output_report: Path) -> None:
     output_report.parent.mkdir(parents=True, exist_ok=True)
     with output_report.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
+    LOGGER.info("Saved features report to %s", output_report)
 
 
 def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
+    LOGGER.info("Starting feature build from %s", config.validated_manifest)
     if not config.validated_manifest.exists():
         report = {
             "passed": False,
@@ -193,6 +208,7 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
             "image_shape": [],
             "class_distribution": {},
         }
+        LOGGER.error("Validated manifest file does not exist: %s", config.validated_manifest)
         write_features_report(report, config.output_report)
         return report
 
@@ -208,6 +224,7 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
             "image_shape": [],
             "class_distribution": {},
         }
+        LOGGER.error("Validated manifest is missing required columns: %s", ", ".join(missing_columns))
         write_features_report(report, config.output_report)
         return report
 
@@ -219,6 +236,7 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
             "image_shape": [],
             "class_distribution": {},
         }
+        LOGGER.error("Validated manifest is empty")
         write_features_report(report, config.output_report)
         return report
 
@@ -234,6 +252,7 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
             "class_distribution": {},
             "split_distribution": {},
         }
+        LOGGER.exception("Feature build failed")
         write_features_report(report, config.output_report)
         return report
 
@@ -256,6 +275,11 @@ def run_feature_build(config: FeaturesConfig) -> dict[str, Any]:
         "output_features": str(config.output_features),
     }
     write_features_report(report, config.output_report)
+    LOGGER.info(
+        "Feature build completed successfully with %s rows and split distribution %s",
+        len(rows),
+        dict(split_distribution),
+    )
     return report
 
 
@@ -267,11 +291,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-report", help="Path to the output JSON feature report.")
     parser.add_argument("--image-width", type=int, help="Target image width.")
     parser.add_argument("--image-height", type=int, help="Target image height.")
+    parser.add_argument("--log-level", default="INFO", help="Logging level, for example DEBUG, INFO, WARNING.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
     settings = load_feature_settings(Path(args.config))
 
     validated_manifest_value = args.validated_manifest or settings.get("validated_manifest")

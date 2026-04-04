@@ -4,6 +4,7 @@ import argparse
 import csv
 import importlib
 import json
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,9 @@ MANIFEST_COLUMNS = (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @dataclass
 class IngestionConfig:
     dataset_root: Path
@@ -74,6 +78,13 @@ class IngestionConfig:
     min_stddev: float = DEFAULT_MIN_STDDEV
     min_center_border_diff: float = DEFAULT_MIN_CENTER_BORDER_DIFF
     duplicate_hash_distance: int = DEFAULT_DUPLICATE_HASH_DISTANCE
+
+
+def configure_logging(log_level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
 
 def load_ingestion_settings(config_path: Path) -> dict[str, Any]:
@@ -98,6 +109,7 @@ def load_ingestion_settings(config_path: Path) -> dict[str, Any]:
 
 
 def download_dataset(dataset_handle: str = DEFAULT_DATASET_HANDLE) -> Path:
+    LOGGER.info("Downloading dataset from KaggleHub: %s", dataset_handle)
     try:
         kagglehub = importlib.import_module("kagglehub")
     except ImportError as exc:
@@ -105,7 +117,9 @@ def download_dataset(dataset_handle: str = DEFAULT_DATASET_HANDLE) -> Path:
             "kagglehub is required for dataset download. Install it with 'pip install kagglehub'."
         ) from exc
 
-    return Path(kagglehub.dataset_download(dataset_handle))
+    downloaded_path = Path(kagglehub.dataset_download(dataset_handle))
+    LOGGER.info("Downloaded dataset to %s", downloaded_path)
+    return downloaded_path
 
 
 def resolve_dataset_root(dataset_root: Path, label_to_id: dict[str, int]) -> Path:
@@ -148,12 +162,15 @@ def build_manifest(config: IngestionConfig) -> list[dict[str, Any]]:
 
 
 def build_manifest_with_report(config: IngestionConfig) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    LOGGER.info("Starting ingestion from dataset root %s", config.dataset_root)
     manifest: list[dict[str, Any]] = []
     sample_number = 1
     dataset_root = resolve_dataset_root(config.dataset_root, config.label_to_id)
     discovered_files = 0
     skipped_unknown_label = 0
     unreadable_files = 0
+
+    LOGGER.info("Resolved dataset root to %s", dataset_root)
 
     for image_path in discover_image_files(dataset_root, config.allowed_extensions):
         discovered_files += 1
@@ -202,6 +219,14 @@ def build_manifest_with_report(config: IngestionConfig) -> tuple[list[dict[str, 
         )
         sample_number += 1
 
+    LOGGER.info(
+        "Scanned %s candidate files, kept %s rows, skipped %s unknown-label files, skipped %s unreadable files",
+        discovered_files,
+        len(manifest),
+        skipped_unknown_label,
+        unreadable_files,
+    )
+
     manifest = assign_duplicate_groups(manifest, max_hash_distance=config.duplicate_hash_distance)
     mri_valid_count = sum(str(row.get("mri_is_valid", "")).lower() == "true" for row in manifest)
     report = {
@@ -217,6 +242,12 @@ def build_manifest_with_report(config: IngestionConfig) -> tuple[list[dict[str, 
         "duplicate_summary": summarize_duplicates(manifest),
         "patient_id_rows": sum(1 for row in manifest if row.get("patient_id")),
     }
+    LOGGER.info(
+        "Ingestion summary: %s valid MRI rows, %s invalid MRI rows, %s duplicate rows",
+        report["mri_valid_rows"],
+        report["mri_invalid_rows"],
+        report["duplicate_summary"]["duplicate_rows"],
+    )
     return manifest, report
 
 
@@ -226,12 +257,14 @@ def save_manifest(rows: list[dict[str, str | int]], output_path: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
+    LOGGER.info("Saved manifest with %s rows to %s", len(rows), output_path)
 
 
 def save_ingestion_report(report: dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
+    LOGGER.info("Saved ingestion report to %s", output_path)
 
 
 def save_duplicate_report(rows: list[dict[str, Any]], output_path: Path) -> None:
@@ -257,6 +290,7 @@ def save_duplicate_report(rows: list[dict[str, Any]], output_path: Path) -> None
             }
             for row in duplicate_rows
         )
+    LOGGER.info("Saved duplicate report with %s rows to %s", len(duplicate_rows), output_path)
 
 
 def build_ingestion_config(
@@ -316,11 +350,13 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DATASET_HANDLE,
         help="KaggleHub dataset handle to download when --download is provided.",
     )
+    parser.add_argument("--log-level", default="INFO", help="Logging level, for example DEBUG, INFO, WARNING.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
     config_settings = load_ingestion_settings(Path(args.config))
 
     download = args.download or bool(config_settings.get("download", False))
@@ -342,8 +378,10 @@ def main() -> None:
     if download:
         dataset_root = download_dataset(str(dataset_handle))
     if dataset_root is None:
+        LOGGER.error("No dataset root provided and download disabled")
         raise ValueError("Provide --dataset-root or use --download.")
     if output_manifest_value is None:
+        LOGGER.error("No output manifest path provided")
         raise ValueError("Provide --output-manifest or configure it in the YAML file.")
 
     config = build_ingestion_config(
@@ -364,6 +402,7 @@ def main() -> None:
     save_manifest(manifest, config.output_manifest)
     save_ingestion_report(report, config.output_report)
     save_duplicate_report(manifest, config.duplicate_report)
+    LOGGER.info("Ingestion completed successfully")
 
 
 if __name__ == "__main__":

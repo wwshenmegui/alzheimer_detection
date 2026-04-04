@@ -4,6 +4,7 @@ import argparse
 import csv
 import importlib
 import json
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,12 +19,22 @@ DEFAULT_VALIDATION_REPORT_PATH = Path("data/reports/validation_report.json")
 DEFAULT_VALIDATED_MANIFEST_PATH = Path("data/processed/validated_manifest.csv")
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @dataclass
 class ValidationConfig:
     manifest_path: Path
     output_report: Path
     label_to_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_LABEL_TO_ID))
     approved_manifest: Path | None = DEFAULT_VALIDATED_MANIFEST_PATH
+
+
+def configure_logging(log_level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
 
 def load_validation_settings(config_path: Path) -> dict[str, Any]:
@@ -73,6 +84,7 @@ def load_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
 
 
 def validate_manifest_rows(rows: list[dict[str, str]], label_to_id: dict[str, int]) -> dict[str, Any]:
+    LOGGER.info("Validating %s manifest rows", len(rows))
     errors: list[str] = []
     warnings: list[str] = []
     class_distribution: Counter[str] = Counter()
@@ -142,7 +154,7 @@ def validate_manifest_rows(rows: list[dict[str, str]], label_to_id: dict[str, in
     if duplicate_summary["near_duplicate_groups"]:
         warnings.append(f"Detected {duplicate_summary['near_duplicate_groups']} near-duplicate groups.")
 
-    return {
+    report = {
         "passed": not errors,
         "errors": errors,
         "warnings": sorted(set(warnings)),
@@ -153,12 +165,21 @@ def validate_manifest_rows(rows: list[dict[str, str]], label_to_id: dict[str, in
         "patient_id_rows": patient_id_rows,
         "valid_rows": valid_rows,
     }
+    LOGGER.info(
+        "Validation summary: passed=%s, valid_rows=%s, errors=%s, warnings=%s",
+        report["passed"],
+        len(valid_rows),
+        len(report["errors"]),
+        len(report["warnings"]),
+    )
+    return report
 
 
 def write_validation_report(report: dict[str, Any], output_report: Path) -> None:
     output_report.parent.mkdir(parents=True, exist_ok=True)
     with output_report.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
+    LOGGER.info("Saved validation report to %s", output_report)
 
 
 def save_validated_manifest(rows: list[dict[str, str]], approved_manifest: Path | None) -> None:
@@ -169,9 +190,11 @@ def save_validated_manifest(rows: list[dict[str, str]], approved_manifest: Path 
         writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
+    LOGGER.info("Saved validated manifest with %s rows to %s", len(rows), approved_manifest)
 
 
 def run_validation(config: ValidationConfig) -> dict[str, Any]:
+    LOGGER.info("Starting manifest validation for %s", config.manifest_path)
     if not config.manifest_path.exists():
         report = {
             "passed": False,
@@ -181,6 +204,7 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
             "class_distribution": {},
             "valid_rows": [],
         }
+        LOGGER.error("Manifest file does not exist: %s", config.manifest_path)
         write_validation_report(report, config.output_report)
         return report
 
@@ -198,6 +222,7 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
             "class_distribution": {},
             "valid_rows": [],
         }
+        LOGGER.error("Manifest is missing required columns: %s", ", ".join(missing_columns))
         write_validation_report(report, config.output_report)
         return report
 
@@ -206,6 +231,9 @@ def run_validation(config: ValidationConfig) -> dict[str, Any]:
 
     if report["passed"]:
         save_validated_manifest(report["valid_rows"], config.approved_manifest)
+        LOGGER.info("Validation completed successfully")
+    else:
+        LOGGER.error("Validation failed with %s errors", len(report["errors"]))
 
     return report
 
@@ -219,11 +247,13 @@ def parse_args() -> argparse.Namespace:
         "--approved-manifest",
         help="Optional path to write a validated copy of the manifest when checks pass.",
     )
+    parser.add_argument("--log-level", default="INFO", help="Logging level, for example DEBUG, INFO, WARNING.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
     settings = load_validation_settings(Path(args.config))
 
     manifest_path_value = args.manifest_path or settings.get("manifest_path")
