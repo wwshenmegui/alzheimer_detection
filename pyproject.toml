@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 160
+target-version = "py39"
+exclude = [
+  ".git",
+  ".pytest_cache",
+  ".venv",
+  "data",
+  "models",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
+"tests/**/*.py" = ["E402"]

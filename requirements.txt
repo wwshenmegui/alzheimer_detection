@@ -5,6 +5,7 @@ numpy
 Pillow
 PyYAML
 pytest
+ruff
 scikit-learn
 python-multipart
 uvicorn

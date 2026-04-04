@@ -70,6 +70,13 @@ From the project root:
 pip install -r requirements.txt
 ```
 
+For local quality checks:
+
+```bash
+ruff check .
+pytest tests/training tests/serving -q
+```
+
 ### 2. Train The Model
 
 The training pipeline is split into several steps.
@@ -222,9 +229,18 @@ The current version is intentionally simple. Important improvements are still ne
 ### Engineering
 
 - split configuration into training and serving configs if the project grows
-- add CI automation for tests and linting
+- ~~add CI automation for tests and linting~~
 - add containerization for easier deployment
 - add environment setup documentation beyond `requirements.txt`
+
+## CI
+
+GitHub Actions CI is configured in `.github/workflows/ci.yml`.
+
+It currently runs on push to `main` and on pull requests, and performs:
+
+- `ruff check .`
+- `pytest tests/training tests/serving -q`
 
 ## Notes
 

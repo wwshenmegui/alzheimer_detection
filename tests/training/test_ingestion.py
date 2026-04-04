@@ -14,7 +14,6 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from training.ingestion.ingest import (
-    DEFAULT_CONFIG_PATH,
     DEFAULT_DATASET_HANDLE,
     IngestionConfig,
     build_ingestion_config,
