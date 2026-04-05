@@ -23,6 +23,18 @@ from shared.model_registry import (
     write_current_version_pointer,
     write_json_file,
 )
+from shared.experiment_tracking import (
+    ExperimentTrackingConfig,
+    build_experiment_tracking_config,
+    capture_configured_stage_outputs,
+    capture_stage_file,
+    finalize_run,
+    initialize_experiment_run,
+    load_experiment_tracking_settings,
+    log_remote_training_run,
+    record_stage,
+    update_run_metadata,
+)
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 
 
@@ -41,6 +53,8 @@ class ModelTrainingConfig:
     max_iter: int = 500
     model_name: str | None = None
     model_version: str = DEFAULT_MODEL_VERSION
+    experiment_tracking: ExperimentTrackingConfig | None = None
+    config_path: Path | None = None
 
 
 def configure_logging(log_level: str) -> None:
@@ -79,6 +93,8 @@ def build_training_config(
     max_iter: int = 500,
     model_name: str | None = None,
     model_version: str = DEFAULT_MODEL_VERSION,
+    experiment_tracking: ExperimentTrackingConfig | None = None,
+    config_path: Path | None = None,
 ) -> ModelTrainingConfig:
     if input_features is None:
         raise ValueError("An input features path is required to build training config.")
@@ -94,6 +110,8 @@ def build_training_config(
         max_iter=max_iter,
         model_name=model_name,
         model_version=model_version,
+        experiment_tracking=experiment_tracking,
+        config_path=config_path,
     )
 
 
@@ -125,6 +143,12 @@ def write_model_metadata(metadata: dict[str, Any], output_path: Path) -> None:
 def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
     LOGGER.info("Starting model training")
     LOGGER.info("Loading feature artifact from %s", config.input_features)
+    experiment_run = None
+    if config.experiment_tracking and config.experiment_tracking.enabled:
+        experiment_run = initialize_experiment_run(
+            config.experiment_tracking,
+            config_snapshot_source=config.config_path,
+        )
 
     if not config.input_features.exists():
         report = {
@@ -136,6 +160,9 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
         }
         LOGGER.error("Feature artifact does not exist: %s", config.input_features)
         write_training_report(report, config.output_report)
+        if experiment_run:
+            record_stage(experiment_run, stage_name="training", status="failed", summary=report)
+            finalize_run(experiment_run, status="failed")
         return report
 
     try:
@@ -150,6 +177,9 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
         }
         LOGGER.exception("Failed to load feature artifact")
         write_training_report(report, config.output_report)
+        if experiment_run:
+            record_stage(experiment_run, stage_name="training", status="failed", summary=report)
+            finalize_run(experiment_run, status="failed")
         return report
 
     if images.size == 0 or labels.size == 0:
@@ -162,6 +192,9 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
         }
         LOGGER.error("Feature artifact is empty")
         write_training_report(report, config.output_report)
+        if experiment_run:
+            record_stage(experiment_run, stage_name="training", status="failed", summary=report)
+            finalize_run(experiment_run, status="failed")
         return report
 
     features = flatten_images(images)
@@ -179,6 +212,9 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
         }
         LOGGER.error("Feature artifact must contain non-empty train and validation splits")
         write_training_report(report, config.output_report)
+        if experiment_run:
+            record_stage(experiment_run, stage_name="training", status="failed", summary=report)
+            finalize_run(experiment_run, status="failed")
         return report
 
     train_features = features[train_mask]
@@ -268,6 +304,91 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
             }
         },
     )
+    if experiment_run:
+        if config.config_path and config.config_path.exists():
+            capture_configured_stage_outputs(
+                experiment_run,
+                config.config_path,
+                save_stage_artifacts=config.experiment_tracking.save_stage_artifacts,
+            )
+        copied_report = capture_stage_file(
+            experiment_run,
+            source_path=config.output_report,
+            destination_group="reports",
+            destination_name=config.output_report.name,
+        )
+        training_artifacts = {
+            "model_path": capture_stage_file(
+                experiment_run,
+                source_path=version_paths["model_path"],
+                destination_group="artifacts",
+                destination_name=version_paths["model_path"].name,
+            )
+            or "",
+            "model_metadata_path": capture_stage_file(
+                experiment_run,
+                source_path=version_paths["metadata_path"],
+                destination_group="artifacts",
+                destination_name=version_paths["metadata_path"].name,
+            )
+            or "",
+        }
+        stage_summary = {
+            "model_name": resolved_model_name,
+            "model_version": config.model_version,
+            "validation_accuracy": validation_accuracy,
+            "train_rows": int(train_features.shape[0]),
+            "validation_rows": int(validation_features.shape[0]),
+        }
+        remote_tracking = {
+            "enabled": config.experiment_tracking.remote.enabled,
+            "backend": config.experiment_tracking.remote.backend if config.experiment_tracking.remote.enabled else None,
+            "run_id": None,
+            "url": config.experiment_tracking.remote.tracking_uri,
+        }
+        if config.experiment_tracking.remote.enabled:
+            remote_run_id = log_remote_training_run(
+                config.experiment_tracking.remote,
+                run_id=experiment_run.run_id,
+                params={
+                    "model_name": resolved_model_name,
+                    "model_version": config.model_version,
+                    "max_iter": config.max_iter,
+                },
+                metrics={
+                    "validation_accuracy": validation_accuracy,
+                    "train_rows": float(train_features.shape[0]),
+                    "validation_rows": float(validation_features.shape[0]),
+                },
+                artifact_paths=[config.output_report, version_paths["model_path"], version_paths["metadata_path"]],
+                tags={"project": "alzheimer_detection", "stage": "training"},
+            )
+            remote_tracking["run_id"] = remote_run_id
+        update_model_metadata(
+            version_paths["metadata_path"],
+            {
+                "experiment_run_id": experiment_run.run_id,
+                "experiment_run_metadata_path": str(experiment_run.metadata_path),
+                "remote_tracking": remote_tracking,
+            },
+        )
+        record_stage(
+            experiment_run,
+            stage_name="training",
+            status="completed",
+            summary=stage_summary,
+            report_path=copied_report,
+            artifacts=training_artifacts,
+        )
+        finalize_run(
+            experiment_run,
+            status="completed",
+            model={"model_name": resolved_model_name, "model_version": config.model_version, "serving_candidate": True},
+            dataset={
+                "feature_artifact_path": str(config.input_features),
+            },
+        )
+        update_run_metadata(experiment_run.metadata_path, {"remote_tracking": remote_tracking})
     LOGGER.info("Wrote training report to %s", config.output_report)
     return report
 
@@ -289,6 +410,7 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.log_level)
     settings = load_training_settings(Path(args.config))
+    experiment_settings = load_experiment_tracking_settings(Path(args.config))
 
     input_features_value = args.input_features or settings.get("input_features")
     output_model_value = args.output_model or settings.get("output_model") or str(DEFAULT_MODEL_OUTPUT_PATH)
@@ -304,6 +426,8 @@ def main() -> None:
         max_iter=max_iter_value,
         model_name=str(model_name_value) if model_name_value else None,
         model_version=str(model_version_value),
+        experiment_tracking=build_experiment_tracking_config(experiment_settings),
+        config_path=Path(args.config),
     )
     report = run_training(config)
     if report["passed"]:

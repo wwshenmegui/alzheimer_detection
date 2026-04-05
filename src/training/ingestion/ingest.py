@@ -5,6 +5,7 @@ import csv
 import importlib
 import json
 import logging
+import shutil
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -122,7 +123,72 @@ def download_dataset(dataset_handle: str = DEFAULT_DATASET_HANDLE) -> Path:
     return downloaded_path
 
 
+def load_last_dataset_root(output_report: Path | None, label_to_id: dict[str, int]) -> Path | None:
+    if output_report is None or not output_report.exists():
+        return None
+
+    try:
+        with output_report.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    dataset_root_value = report.get("dataset_root")
+    if not dataset_root_value:
+        return None
+
+    dataset_root = Path(str(dataset_root_value))
+    if not dataset_root.exists():
+        return None
+
+    try:
+        return resolve_dataset_root(dataset_root, label_to_id)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def resolve_input_dataset_root(
+    dataset_root: Path | None,
+    *,
+    output_report: Path | None,
+    label_to_id: dict[str, int],
+) -> Path | None:
+    if dataset_root is None:
+        return None
+    if dataset_root.exists():
+        return dataset_root
+
+    last_dataset_root = load_last_dataset_root(output_report, label_to_id)
+    if last_dataset_root is not None:
+        LOGGER.warning(
+            "Configured dataset root %s does not exist; using last ingested dataset root %s from %s",
+            dataset_root,
+            last_dataset_root,
+            output_report,
+        )
+        return last_dataset_root
+
+    raise FileNotFoundError(
+        f"Dataset root does not exist: {dataset_root}. Run with '--download' first or update 'ingestion.dataset_root' to a valid local dataset path."
+    )
+
+
+def persist_downloaded_dataset(downloaded_path: Path, destination_root: Path, label_to_id: dict[str, int]) -> Path:
+    source_root = resolve_dataset_root(downloaded_path, label_to_id)
+    destination_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_root, destination_root, dirs_exist_ok=True)
+    LOGGER.info("Copied downloaded dataset from %s to %s", source_root, destination_root)
+    return destination_root
+
+
 def resolve_dataset_root(dataset_root: Path, label_to_id: dict[str, int]) -> Path:
+    if not dataset_root.exists():
+        raise FileNotFoundError(
+            f"Dataset root does not exist: {dataset_root}. Run with '--download' first or update 'ingestion.dataset_root' to a valid local dataset path."
+        )
+    if not dataset_root.is_dir():
+        raise NotADirectoryError(f"Dataset root is not a directory: {dataset_root}")
+
     expected_labels = set(label_to_id)
     direct_subdirectories = {path.name for path in dataset_root.iterdir() if path.is_dir()}
     if expected_labels.issubset(direct_subdirectories):
@@ -373,13 +439,26 @@ def main() -> None:
     min_stddev_value = float(config_settings.get("min_stddev", DEFAULT_MIN_STDDEV))
     min_center_border_diff_value = float(config_settings.get("min_center_border_diff", DEFAULT_MIN_CENTER_BORDER_DIFF))
     duplicate_hash_distance_value = int(config_settings.get("duplicate_hash_distance", DEFAULT_DUPLICATE_HASH_DISTANCE))
+    label_to_id = {str(key): int(value) for key, value in label_to_id_value.items()}
+    output_report_path = Path(output_report_value)
 
     dataset_root = Path(dataset_root_value) if dataset_root_value else None
     if download:
-        dataset_root = download_dataset(str(dataset_handle))
+        downloaded_root = download_dataset(str(dataset_handle))
+        dataset_root = (
+            persist_downloaded_dataset(downloaded_root, dataset_root, label_to_id)
+            if dataset_root is not None
+            else downloaded_root
+        )
     if dataset_root is None:
         LOGGER.error("No dataset root provided and download disabled")
         raise ValueError("Provide --dataset-root or use --download.")
+    if not download:
+        dataset_root = resolve_input_dataset_root(
+            dataset_root,
+            output_report=output_report_path,
+            label_to_id=label_to_id,
+        )
     if output_manifest_value is None:
         LOGGER.error("No output manifest path provided")
         raise ValueError("Provide --output-manifest or configure it in the YAML file.")
@@ -387,9 +466,9 @@ def main() -> None:
     config = build_ingestion_config(
         dataset_root=dataset_root,
         output_manifest=Path(output_manifest_value),
-        label_to_id={str(key): int(value) for key, value in label_to_id_value.items()},
+        label_to_id=label_to_id,
         allowed_extensions=tuple(str(item) for item in allowed_extensions_value),
-        output_report=Path(output_report_value),
+        output_report=output_report_path,
         duplicate_report=Path(duplicate_report_value),
         patient_id_regex=str(patient_id_regex_value) if patient_id_regex_value else None,
         min_image_size=(int(min_image_size_value[0]), int(min_image_size_value[1])),

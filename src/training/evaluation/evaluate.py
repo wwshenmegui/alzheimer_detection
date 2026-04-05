@@ -5,6 +5,7 @@ import importlib
 import json
 import logging
 import pickle
+from types import SimpleNamespace
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,16 @@ import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
 from shared.model_registry import build_artifact_lineage, resolve_model_artifacts, update_model_metadata
+from shared.experiment_tracking import (
+    ExperimentTrackingConfig,
+    build_experiment_tracking_config,
+    capture_stage_file,
+    finalize_run,
+    get_run_from_model_metadata,
+    load_experiment_tracking_settings,
+    log_remote_evaluation_run,
+    record_stage,
+)
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH
 from training.models.train import flatten_images, load_feature_artifact
 
@@ -28,6 +39,7 @@ class EvaluationConfig:
     input_features: Path
     input_model: Path
     output_report: Path
+    experiment_tracking: ExperimentTrackingConfig | None = None
 
 
 def configure_logging(log_level: str) -> None:
@@ -63,6 +75,7 @@ def build_evaluation_config(
     input_features: Path | None,
     input_model: Path | None,
     output_report: Path | None,
+    experiment_tracking: ExperimentTrackingConfig | None = None,
 ) -> EvaluationConfig:
     if input_features is None:
         raise ValueError("An input features path is required to build evaluation config.")
@@ -75,6 +88,7 @@ def build_evaluation_config(
         input_features=input_features,
         input_model=input_model,
         output_report=output_report,
+        experiment_tracking=experiment_tracking,
     )
 
 
@@ -203,6 +217,44 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                 },
             },
         )
+        experiment_run_id, experiment_metadata_path, remote_run_id = get_run_from_model_metadata(metadata_path)
+        if experiment_metadata_path and experiment_metadata_path.exists():
+            run_reports_dir = experiment_metadata_path.parent / "reports"
+            run_artifacts_dir = experiment_metadata_path.parent / "artifacts"
+            run_index_path = experiment_metadata_path.parent.parent / "index.json"
+            run_copy_target = SimpleNamespace(reports_dir=run_reports_dir, artifacts_dir=run_artifacts_dir)
+            run_metadata_target = SimpleNamespace(metadata_path=experiment_metadata_path, index_path=run_index_path)
+            copied_report = capture_stage_file(
+                run_copy_target,
+                source_path=config.output_report,
+                destination_group="reports",
+                destination_name=config.output_report.name,
+            )
+            record_stage(
+                run_metadata_target,
+                stage_name="evaluation",
+                status="completed",
+                summary={
+                    "accuracy": accuracy,
+                    "f1_macro": float(f1_macro),
+                    "test_rows": int(test_features.shape[0]),
+                },
+                report_path=copied_report,
+                artifacts={},
+            )
+            finalize_run(run_metadata_target, status="completed")
+            if config.experiment_tracking and config.experiment_tracking.remote.enabled and remote_run_id:
+                log_remote_evaluation_run(
+                    config.experiment_tracking.remote,
+                    remote_run_id=str(remote_run_id),
+                    metrics={
+                        "evaluation_accuracy": accuracy,
+                        "evaluation_f1_macro": float(f1_macro),
+                        "evaluation_precision_macro": float(precision_macro),
+                        "evaluation_recall_macro": float(recall_macro),
+                    },
+                    artifact_paths=[config.output_report],
+                )
     LOGGER.info("Wrote evaluation report to %s", config.output_report)
     LOGGER.info("Evaluation accuracy: %.4f", accuracy)
     return report
@@ -222,6 +274,7 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.log_level)
     settings = load_evaluation_settings(Path(args.config))
+    experiment_settings = load_experiment_tracking_settings(Path(args.config))
 
     input_features_value = args.input_features or settings.get("input_features")
     input_model_value = args.input_model or settings.get("input_model")
@@ -231,6 +284,7 @@ def main() -> None:
         input_features=Path(input_features_value) if input_features_value else None,
         input_model=Path(input_model_value) if input_model_value else None,
         output_report=Path(output_report_value) if output_report_value else None,
+        experiment_tracking=build_experiment_tracking_config(experiment_settings),
     )
     report = run_evaluation(config)
     if report["passed"]:

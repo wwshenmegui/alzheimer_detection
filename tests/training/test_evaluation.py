@@ -12,6 +12,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from shared.experiment_tracking import ExperimentTrackingConfig
 from training.evaluation.evaluate import (
     build_evaluation_config,
     load_evaluation_settings,
@@ -60,6 +61,7 @@ def train_test_model(tmp_path: Path) -> tuple[Path, Path]:
         output_model=model_path,
         output_report=training_report,
         max_iter=300,
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
     )
     report = run_training(training_config)
     assert report["passed"] is True
@@ -73,6 +75,7 @@ def test_run_evaluation_creates_report(tmp_path: Path) -> None:
         input_features=features_path,
         input_model=model_path,
         output_report=report_path,
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
     )
 
     report = run_evaluation(config)
@@ -97,6 +100,8 @@ def test_run_evaluation_creates_report(tmp_path: Path) -> None:
     assert metadata["evaluation_report_path"] == str(report_path)
     assert metadata["lineage"]["evaluation_report_path"] == str(report_path)
     assert metadata["lineage"]["evaluation_report_sha256"]
+    run_metadata = json.loads(Path(metadata["experiment_run_metadata_path"]).read_text(encoding="utf-8"))
+    assert run_metadata["stages"]["evaluation"]["summary"]["accuracy"] == report["accuracy"]
 
 
 def test_run_evaluation_fails_for_missing_model(tmp_path: Path) -> None:

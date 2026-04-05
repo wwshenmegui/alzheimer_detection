@@ -61,6 +61,20 @@ evaluation:
   input_model: models/trained/logistic_regression.pkl
   output_report: data/reports/evaluation_report.json
 
+experiment_tracking:
+  enabled: true
+  run_id: null
+  local_runs_dir: data/experiments
+  update_latest_reports: true
+  save_config_snapshot: true
+  save_stage_artifacts: true
+  remote:
+    enabled: false
+    backend: mlflow
+    tracking_uri: null
+    experiment_name: alzheimer_detection
+    artifact_location: null
+
 serving:
   model_path: models/trained/logistic_regression.pkl
   model_name: alzheimer_detector

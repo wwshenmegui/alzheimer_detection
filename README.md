@@ -79,6 +79,18 @@ pytest tests/training tests/serving -q
 
 ### 2. Train The Model
 
+For the full training flow in one command:
+
+```bash
+python scripts/run_training_pipeline.py
+```
+
+To download the dataset first and then run the full pipeline:
+
+```bash
+python scripts/run_training_pipeline.py --download
+```
+
 The training pipeline is split into several steps.
 
 #### Step 1: Ingest Data

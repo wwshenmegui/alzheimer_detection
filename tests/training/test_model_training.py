@@ -13,6 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from shared.experiment_tracking import ExperimentTrackingConfig
 from training.models.train import (
     build_training_config,
     flatten_images,
@@ -62,6 +63,22 @@ def test_flatten_images_returns_2d_matrix() -> None:
 def test_run_training_creates_model_and_report(tmp_path: Path) -> None:
     features_path = tmp_path / "features.npz"
     create_feature_artifact(features_path)
+    config_path = tmp_path / "training.yaml"
+    config_path.write_text(
+        """
+ingestion:
+  output_manifest: data/processed/manifest.csv
+  output_report: data/reports/ingestion_summary.json
+  duplicate_report: data/reports/duplicate_report.csv
+validation:
+  approved_manifest: data/processed/validated_manifest.csv
+  output_report: data/reports/validation_report.json
+features:
+  output_features: data/processed/features.npz
+  output_report: data/reports/features_report.json
+""".strip(),
+        encoding="utf-8",
+    )
 
     output_model = tmp_path / "logistic_regression.pkl"
     output_report = tmp_path / "training_report.json"
@@ -70,6 +87,8 @@ def test_run_training_creates_model_and_report(tmp_path: Path) -> None:
         output_model=output_model,
         output_report=output_report,
         max_iter=300,
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
+        config_path=config_path,
     )
 
     report = run_training(config)
@@ -103,6 +122,32 @@ def test_run_training_creates_model_and_report(tmp_path: Path) -> None:
     assert metadata["lineage"]["model_artifact_sha256"]
     assert metadata["lineage"]["training_report_path"] == str(output_report)
     assert metadata["lineage"]["training_report_sha256"]
+    assert metadata["experiment_run_id"]
+    run_metadata_path = Path(metadata["experiment_run_metadata_path"])
+    assert run_metadata_path.exists()
+    run_metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "completed"
+    assert run_metadata["stages"]["training"]["summary"]["model_version"] == "v1"
+
+
+def test_run_training_writes_experiment_index(tmp_path: Path) -> None:
+    features_path = tmp_path / "features.npz"
+    create_feature_artifact(features_path)
+    config = build_training_config(
+        input_features=features_path,
+        output_model=tmp_path / "logistic_regression.pkl",
+        output_report=tmp_path / "training_report.json",
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
+    )
+
+    report = run_training(config)
+
+    assert report["passed"] is True
+    index_path = tmp_path / "experiments" / "index.json"
+    assert index_path.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert len(index["runs"]) == 1
+    assert index["runs"][0]["run_id"]
 
 
 def test_run_training_fails_for_missing_features(tmp_path: Path) -> None:

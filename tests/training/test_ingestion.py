@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 import types
 from pathlib import Path
@@ -20,6 +21,8 @@ from training.ingestion.ingest import (
     build_manifest,
     download_dataset,
     load_ingestion_settings,
+    persist_downloaded_dataset,
+    resolve_input_dataset_root,
     resolve_dataset_root,
     save_duplicate_report,
     save_manifest,
@@ -174,6 +177,51 @@ def test_download_dataset_uses_kagglehub(monkeypatch, tmp_path: Path) -> None:
     resolved_path = download_dataset()
 
     assert resolved_path == fake_download_path
+
+
+def test_persist_downloaded_dataset_copies_resolved_download_root(tmp_path: Path) -> None:
+    downloaded_root = tmp_path / "kaggle-cache"
+    source_root = downloaded_root / "combined_images"
+    destination_root = tmp_path / "data" / "raw" / "alzheimers_multiclass"
+    for label_name in ("NonDemented", "VeryMildDemented", "MildDemented", "ModerateDemented"):
+        create_test_image(source_root / label_name / "scan_1.png")
+
+    copied_root = persist_downloaded_dataset(
+        downloaded_root,
+        destination_root,
+        {
+            "NonDemented": 0,
+            "VeryMildDemented": 1,
+            "MildDemented": 2,
+            "ModerateDemented": 3,
+        },
+    )
+
+    assert copied_root == destination_root
+    assert (destination_root / "NonDemented" / "scan_1.png").exists()
+
+
+def test_resolve_input_dataset_root_uses_last_ingestion_report(tmp_path: Path) -> None:
+    fallback_root = tmp_path / "kaggle-cache" / "combined_images"
+    for label_name in ("NonDemented", "VeryMildDemented", "MildDemented", "ModerateDemented"):
+        (fallback_root / label_name).mkdir(parents=True)
+
+    output_report = tmp_path / "reports" / "ingestion_summary.json"
+    output_report.parent.mkdir(parents=True, exist_ok=True)
+    output_report.write_text(json.dumps({"dataset_root": str(fallback_root)}), encoding="utf-8")
+
+    resolved_root = resolve_input_dataset_root(
+        tmp_path / "missing-local-dataset",
+        output_report=output_report,
+        label_to_id={
+            "NonDemented": 0,
+            "VeryMildDemented": 1,
+            "MildDemented": 2,
+            "ModerateDemented": 3,
+        },
+    )
+
+    assert resolved_root == fallback_root
 
 
 def test_load_ingestion_settings_reads_yaml_config(tmp_path: Path, monkeypatch) -> None:
