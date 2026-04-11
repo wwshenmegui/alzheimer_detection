@@ -139,7 +139,44 @@ python scripts/run_training.py
 python scripts/run_evaluation.py
 ```
 
-### 3. Run The Server
+### 3. Optional MLflow Tracking
+
+The project can log training and evaluation runs to a local MLflow tracking server.
+
+Start MLflow locally from the project root:
+
+```bash
+mlflow server \
+  --host 127.0.0.1 \
+  --port 5000 \
+  --backend-store-uri sqlite:///mlflow.db \
+  --artifacts-destination ./mlruns
+```
+
+Then enable remote tracking in `configs/training.yaml`:
+
+```yaml
+experiment_tracking:
+  enabled: true
+  remote:
+    enabled: true
+    backend: mlflow
+    tracking_uri: http://127.0.0.1:5000
+    experiment_name: alzheimer_detection
+    artifact_location: null
+```
+
+After that, run the training pipeline:
+
+```bash
+python scripts/run_training_pipeline.py
+```
+
+New remote-enabled runs will create entries in the MLflow `Runs`, `Models`, and `Evaluation` views.
+
+Open the MLflow UI at `http://127.0.0.1:5000`.
+
+### 4. Run The Server
 
 Start the API server:
 
@@ -153,7 +190,7 @@ By default the server runs at:
 http://127.0.0.1:8000
 ```
 
-### 4. Call The Backend
+### 5. Call The Backend
 
 Health check:
 

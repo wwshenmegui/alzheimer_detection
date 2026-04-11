@@ -15,6 +15,7 @@ from .model_registry import load_model_metadata, write_json_file
 DEFAULT_EXPERIMENTS_DIR = Path("data/experiments")
 DEFAULT_EXPERIMENT_NAME = "alzheimer_detection"
 DEFAULT_REMOTE_BACKEND = "mlflow"
+DEFAULT_REMOTE_MODEL_ARTIFACT_PATH = "model"
 
 
 @dataclass
@@ -336,8 +337,12 @@ def log_remote_training_run(
     params: dict[str, Any],
     metrics: dict[str, float],
     artifact_paths: list[Path],
+    model: Any | None = None,
+    input_example: Any | None = None,
+    signature_inputs: Any | None = None,
+    signature_outputs: Any | None = None,
     tags: dict[str, str] | None = None,
-) -> str:
+) -> dict[str, str | None]:
     mlflow = _load_mlflow()
     if config.tracking_uri:
         mlflow.set_tracking_uri(config.tracking_uri)
@@ -350,7 +355,20 @@ def log_remote_training_run(
         for artifact_path in artifact_paths:
             if artifact_path.exists():
                 mlflow.log_artifact(str(artifact_path))
-        return str(run.info.run_id)
+        logged_model_uri = None
+        if model is not None:
+            logged_model_uri = _log_mlflow_model(
+                mlflow,
+                model=model,
+                run_id=str(run.info.run_id),
+                input_example=input_example,
+                signature_inputs=signature_inputs,
+                signature_outputs=signature_outputs,
+            )
+        return {
+            "run_id": str(run.info.run_id),
+            "logged_model_uri": logged_model_uri,
+        }
 
 
 def log_remote_evaluation_run(
@@ -359,6 +377,9 @@ def log_remote_evaluation_run(
     remote_run_id: str,
     metrics: dict[str, float],
     artifact_paths: list[Path],
+    evaluation_features: Any | None = None,
+    evaluation_labels: Any | None = None,
+    model_uri: str | None = None,
 ) -> None:
     mlflow = _load_mlflow()
     if config.tracking_uri:
@@ -368,6 +389,14 @@ def log_remote_evaluation_run(
         for artifact_path in artifact_paths:
             if artifact_path.exists():
                 mlflow.log_artifact(str(artifact_path))
+        if evaluation_features is not None and evaluation_labels is not None:
+            _log_mlflow_evaluation(
+                mlflow,
+                remote_run_id=remote_run_id,
+                evaluation_features=evaluation_features,
+                evaluation_labels=evaluation_labels,
+                model_uri=model_uri,
+            )
 
 
 def get_run_from_model_metadata(metadata_path: Path | None) -> tuple[str | None, Path | None, str | None]:
@@ -417,6 +446,65 @@ def _load_mlflow():
         raise RuntimeError(
             "MLflow is required for remote experiment tracking. Install it with 'pip install mlflow'."
         ) from exc
+
+
+def _load_pandas():
+    import importlib
+
+    try:
+        return importlib.import_module("pandas")
+    except ImportError as exc:
+        raise RuntimeError(
+            "pandas is required for MLflow evaluation logging. Install it with 'pip install pandas'."
+        ) from exc
+
+
+def _log_mlflow_model(
+    mlflow: Any,
+    *,
+    model: Any,
+    run_id: str,
+    input_example: Any | None,
+    signature_inputs: Any | None,
+    signature_outputs: Any | None,
+) -> str:
+    signature = None
+    if signature_inputs is not None and signature_outputs is not None:
+        signature = mlflow.models.infer_signature(signature_inputs, signature_outputs)
+
+    model_info = mlflow.sklearn.log_model(
+        sk_model=model,
+        artifact_path=DEFAULT_REMOTE_MODEL_ARTIFACT_PATH,
+        input_example=input_example,
+        signature=signature,
+    )
+    if getattr(model_info, "model_uri", None):
+        return str(model_info.model_uri)
+    return f"runs:/{run_id}/{DEFAULT_REMOTE_MODEL_ARTIFACT_PATH}"
+
+
+def _log_mlflow_evaluation(
+    mlflow: Any,
+    *,
+    remote_run_id: str,
+    evaluation_features: Any,
+    evaluation_labels: Any,
+    model_uri: str | None,
+) -> None:
+    pandas = _load_pandas()
+    feature_matrix = evaluation_features.tolist() if hasattr(evaluation_features, "tolist") else evaluation_features
+    label_vector = evaluation_labels.tolist() if hasattr(evaluation_labels, "tolist") else evaluation_labels
+    feature_width = len(feature_matrix[0]) if feature_matrix else 0
+    feature_names = [f"feature_{index:05d}" for index in range(feature_width)]
+    evaluation_frame = pandas.DataFrame(feature_matrix, columns=feature_names)
+    evaluation_frame["target"] = label_vector
+    mlflow.evaluate(
+        model=model_uri or f"runs:/{remote_run_id}/{DEFAULT_REMOTE_MODEL_ARTIFACT_PATH}",
+        data=evaluation_frame,
+        targets="target",
+        model_type="classifier",
+        evaluator_config={"log_model_explainability": False},
+    )
 
 
 def _deep_update(target: dict[str, Any], updates: dict[str, Any]) -> None:

@@ -1,7 +1,9 @@
 fastapi
 httpx
 kagglehub
+mlflow
 numpy
+pandas
 Pillow
 PyYAML
 pytest

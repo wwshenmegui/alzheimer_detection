@@ -347,7 +347,7 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
             "url": config.experiment_tracking.remote.tracking_uri,
         }
         if config.experiment_tracking.remote.enabled:
-            remote_run_id = log_remote_training_run(
+            remote_result = log_remote_training_run(
                 config.experiment_tracking.remote,
                 run_id=experiment_run.run_id,
                 params={
@@ -361,9 +361,14 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
                     "validation_rows": float(validation_features.shape[0]),
                 },
                 artifact_paths=[config.output_report, version_paths["model_path"], version_paths["metadata_path"]],
+                model=model,
+                input_example=validation_features[: min(5, validation_features.shape[0])],
+                signature_inputs=validation_features[: min(20, validation_features.shape[0])],
+                signature_outputs=validation_predictions[: min(20, validation_predictions.shape[0])],
                 tags={"project": "alzheimer_detection", "stage": "training"},
             )
-            remote_tracking["run_id"] = remote_run_id
+            remote_tracking["run_id"] = remote_result["run_id"]
+            remote_tracking["logged_model_uri"] = remote_result["logged_model_uri"]
         update_model_metadata(
             version_paths["metadata_path"],
             {

@@ -254,6 +254,8 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                         "evaluation_recall_macro": float(recall_macro),
                     },
                     artifact_paths=[config.output_report],
+                    evaluation_features=test_features,
+                    evaluation_labels=test_labels,
                 )
     LOGGER.info("Wrote evaluation report to %s", config.output_report)
     LOGGER.info("Evaluation accuracy: %.4f", accuracy)
