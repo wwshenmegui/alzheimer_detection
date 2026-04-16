@@ -365,10 +365,13 @@ def run_training(config: ModelTrainingConfig) -> dict[str, Any]:
                 input_example=validation_features[: min(5, validation_features.shape[0])],
                 signature_inputs=validation_features[: min(20, validation_features.shape[0])],
                 signature_outputs=validation_predictions[: min(20, validation_predictions.shape[0])],
+                registered_model_name=resolved_model_name,
                 tags={"project": "alzheimer_detection", "stage": "training"},
             )
             remote_tracking["run_id"] = remote_result["run_id"]
             remote_tracking["logged_model_uri"] = remote_result["logged_model_uri"]
+            remote_tracking["registered_model_name"] = remote_result["registered_model_name"]
+            remote_tracking["registered_model_version"] = remote_result["registered_model_version"]
         update_model_metadata(
             version_paths["metadata_path"],
             {

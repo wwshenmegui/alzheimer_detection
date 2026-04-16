@@ -104,6 +104,36 @@ def test_run_evaluation_creates_report(tmp_path: Path) -> None:
     assert run_metadata["stages"]["evaluation"]["summary"]["accuracy"] == report["accuracy"]
 
 
+def test_run_evaluation_with_explicit_versioned_model_path_updates_run_metadata(tmp_path: Path) -> None:
+    features_path = tmp_path / "features.npz"
+    create_feature_artifact(features_path)
+    training_config = build_training_config(
+        input_features=features_path,
+        output_model=tmp_path / "model.pkl",
+        output_report=tmp_path / "training_report.json",
+        max_iter=300,
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
+    )
+    training_report = run_training(training_config)
+    assert training_report["passed"] is True
+
+    report_path = tmp_path / "evaluation_report.json"
+    config = build_evaluation_config(
+        input_features=features_path,
+        input_model=Path(training_report["output_model"]),
+        output_report=report_path,
+        experiment_tracking=ExperimentTrackingConfig(enabled=True, local_runs_dir=tmp_path / "experiments"),
+    )
+
+    report = run_evaluation(config)
+
+    assert report["passed"] is True
+    metadata_path = Path(training_report["output_metadata"])
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    run_metadata = json.loads(Path(metadata["experiment_run_metadata_path"]).read_text(encoding="utf-8"))
+    assert run_metadata["stages"]["evaluation"]["summary"]["accuracy"] == report["accuracy"]
+
+
 def test_run_evaluation_fails_for_missing_model(tmp_path: Path) -> None:
     features_path = tmp_path / "features.npz"
     create_feature_artifact(features_path)

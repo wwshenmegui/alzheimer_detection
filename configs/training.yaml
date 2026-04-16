@@ -50,7 +50,7 @@ features:
 
 model:
   input_features: data/processed/features.npz
-  output_model: models/trained/logistic_regression.pkl
+  output_model: models/trained/alzheimer_detector.pkl
   output_report: data/reports/training_report.json
   max_iter: 500
   model_name: alzheimer_detector
@@ -58,7 +58,7 @@ model:
 
 evaluation:
   input_features: data/processed/features.npz
-  input_model: models/trained/logistic_regression.pkl
+  input_model: models/trained/alzheimer_detector.pkl
   output_report: data/reports/evaluation_report.json
 
 experiment_tracking:
@@ -76,7 +76,7 @@ experiment_tracking:
     artifact_location: null
 
 serving:
-  model_path: models/trained/logistic_regression.pkl
+  model_path: models/trained/alzheimer_detector.pkl
   model_name: alzheimer_detector
   image_size:
     - 128

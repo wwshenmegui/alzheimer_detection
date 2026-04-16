@@ -15,6 +15,8 @@ from .model_registry import load_model_metadata, write_json_file
 DEFAULT_EXPERIMENTS_DIR = Path("data/experiments")
 DEFAULT_EXPERIMENT_NAME = "alzheimer_detection"
 DEFAULT_REMOTE_BACKEND = "mlflow"
+DEFAULT_REMOTE_MODEL_ALIAS = "champion"
+DEFAULT_REMOTE_PROMOTION_METRIC = "evaluation_accuracy"
 DEFAULT_REMOTE_MODEL_ARTIFACT_PATH = "model"
 
 
@@ -341,6 +343,7 @@ def log_remote_training_run(
     input_example: Any | None = None,
     signature_inputs: Any | None = None,
     signature_outputs: Any | None = None,
+    registered_model_name: str | None = None,
     tags: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     mlflow = _load_mlflow()
@@ -356,6 +359,7 @@ def log_remote_training_run(
             if artifact_path.exists():
                 mlflow.log_artifact(str(artifact_path))
         logged_model_uri = None
+        registered_model_version = None
         if model is not None:
             logged_model_uri = _log_mlflow_model(
                 mlflow,
@@ -365,9 +369,17 @@ def log_remote_training_run(
                 signature_inputs=signature_inputs,
                 signature_outputs=signature_outputs,
             )
+            if registered_model_name:
+                registered_model_version = _register_mlflow_model(
+                    mlflow,
+                    model_uri=logged_model_uri,
+                    registered_model_name=registered_model_name,
+                )
         return {
             "run_id": str(run.info.run_id),
             "logged_model_uri": logged_model_uri,
+            "registered_model_name": registered_model_name,
+            "registered_model_version": registered_model_version,
         }
 
 
@@ -380,6 +392,11 @@ def log_remote_evaluation_run(
     evaluation_features: Any | None = None,
     evaluation_labels: Any | None = None,
     model_uri: str | None = None,
+    registered_model_name: str | None = None,
+    registered_model_version: str | None = None,
+    promotion_alias: str = DEFAULT_REMOTE_MODEL_ALIAS,
+    promotion_metric: str = DEFAULT_REMOTE_PROMOTION_METRIC,
+    promote_higher_is_better: bool = True,
 ) -> None:
     mlflow = _load_mlflow()
     if config.tracking_uri:
@@ -396,6 +413,22 @@ def log_remote_evaluation_run(
                 evaluation_features=evaluation_features,
                 evaluation_labels=evaluation_labels,
                 model_uri=model_uri,
+            )
+        if registered_model_name and registered_model_version:
+            _tag_model_version_metrics(
+                mlflow,
+                registered_model_name=registered_model_name,
+                registered_model_version=registered_model_version,
+                metrics=metrics,
+            )
+            _promote_mlflow_model_alias(
+                mlflow,
+                registered_model_name=registered_model_name,
+                registered_model_version=registered_model_version,
+                alias_name=promotion_alias,
+                metric_name=promotion_metric,
+                candidate_metric_value=metrics.get(promotion_metric),
+                higher_is_better=promote_higher_is_better,
             )
 
 
@@ -483,6 +516,11 @@ def _log_mlflow_model(
     return f"runs:/{run_id}/{DEFAULT_REMOTE_MODEL_ARTIFACT_PATH}"
 
 
+def _register_mlflow_model(mlflow: Any, *, model_uri: str, registered_model_name: str) -> str:
+    registered = mlflow.register_model(model_uri=model_uri, name=registered_model_name)
+    return str(registered.version)
+
+
 def _log_mlflow_evaluation(
     mlflow: Any,
     *,
@@ -505,6 +543,54 @@ def _log_mlflow_evaluation(
         model_type="classifier",
         evaluator_config={"log_model_explainability": False},
     )
+
+
+def _tag_model_version_metrics(
+    mlflow: Any,
+    *,
+    registered_model_name: str,
+    registered_model_version: str,
+    metrics: dict[str, float],
+) -> None:
+    client = mlflow.tracking.MlflowClient()
+    for metric_name, metric_value in metrics.items():
+        client.set_model_version_tag(
+            name=registered_model_name,
+            version=str(registered_model_version),
+            key=f"metric.{metric_name}",
+            value=str(metric_value),
+        )
+
+
+def _promote_mlflow_model_alias(
+    mlflow: Any,
+    *,
+    registered_model_name: str,
+    registered_model_version: str,
+    alias_name: str,
+    metric_name: str,
+    candidate_metric_value: float | None,
+    higher_is_better: bool,
+) -> None:
+    if candidate_metric_value is None:
+        return
+
+    client = mlflow.tracking.MlflowClient()
+    current_metric_value = None
+    try:
+        current_alias = client.get_model_version_by_alias(registered_model_name, alias_name)
+        current_metric_raw = (getattr(current_alias, "tags", {}) or {}).get(f"metric.{metric_name}")
+        if current_metric_raw is not None:
+            current_metric_value = float(current_metric_raw)
+    except Exception:
+        current_metric_value = None
+
+    should_promote = current_metric_value is None
+    if current_metric_value is not None:
+        should_promote = candidate_metric_value > current_metric_value if higher_is_better else candidate_metric_value < current_metric_value
+
+    if should_promote:
+        client.set_registered_model_alias(registered_model_name, alias_name, str(registered_model_version))
 
 
 def _deep_update(target: dict[str, Any], updates: dict[str, Any]) -> None:

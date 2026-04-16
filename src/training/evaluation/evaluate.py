@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
-from shared.model_registry import build_artifact_lineage, resolve_model_artifacts, update_model_metadata
+from shared.model_registry import build_artifact_lineage, load_model_metadata, resolve_model_artifacts, update_model_metadata
 from shared.experiment_tracking import (
     ExperimentTrackingConfig,
     build_experiment_tracking_config,
@@ -218,6 +218,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
             },
         )
         experiment_run_id, experiment_metadata_path, remote_run_id = get_run_from_model_metadata(metadata_path)
+        remote_tracking_metadata = (load_model_metadata(metadata_path) or {}).get("remote_tracking", {})
         if experiment_metadata_path and experiment_metadata_path.exists():
             run_reports_dir = experiment_metadata_path.parent / "reports"
             run_artifacts_dir = experiment_metadata_path.parent / "artifacts"
@@ -256,6 +257,9 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                     artifact_paths=[config.output_report],
                     evaluation_features=test_features,
                     evaluation_labels=test_labels,
+                    model_uri=remote_tracking_metadata.get("logged_model_uri"),
+                    registered_model_name=remote_tracking_metadata.get("registered_model_name"),
+                    registered_model_version=remote_tracking_metadata.get("registered_model_version"),
                 )
     LOGGER.info("Wrote evaluation report to %s", config.output_report)
     LOGGER.info("Evaluation accuracy: %.4f", accuracy)

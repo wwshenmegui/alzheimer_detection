@@ -17,7 +17,18 @@ from shared.data_quality import (
     InputValidationError,
     validate_mri_image_bytes,
 )
-from shared.model_registry import activate_model_version, list_registered_models, load_model_metadata, resolve_model_artifacts
+from shared.experiment_tracking import build_experiment_tracking_config, load_experiment_tracking_settings
+from shared.model_registry import (
+    DEFAULT_MLFLOW_MODEL_ALIAS,
+    activate_mlflow_model_alias,
+    activate_model_version,
+    list_mlflow_registered_models,
+    list_registered_models,
+    load_mlflow_model,
+    load_mlflow_model_metadata,
+    load_model_metadata,
+    resolve_model_artifacts,
+)
 from training.features.build_features import DEFAULT_IMAGE_SIZE
 from training.ingestion.ingest import DEFAULT_CONFIG_PATH, DEFAULT_LABEL_TO_ID
 
@@ -33,6 +44,9 @@ class ServingConfig:
     model_path: Path
     model_name: str | None = None
     model_version: str | None = None
+    model_source: str = "file"
+    mlflow_tracking_uri: str | None = None
+    mlflow_model_alias: str = DEFAULT_MLFLOW_MODEL_ALIAS
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE
     host: str = "127.0.0.1"
     port: int = 8000
@@ -82,6 +96,9 @@ def build_serving_config(
     model_path: Path | None,
     model_name: str | None = None,
     model_version: str | None = None,
+    model_source: str = "file",
+    mlflow_tracking_uri: str | None = None,
+    mlflow_model_alias: str = DEFAULT_MLFLOW_MODEL_ALIAS,
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -99,6 +116,9 @@ def build_serving_config(
         model_path=model_path,
         model_name=model_name,
         model_version=model_version,
+        model_source=model_source,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_model_alias=mlflow_model_alias,
         image_size=image_size,
         host=host,
         port=port,
@@ -114,19 +134,41 @@ def build_serving_config(
 class ModelPredictor:
     def __init__(self, config: ServingConfig):
         self.config = config
-        self.model_path, self.metadata_path = resolve_model_artifacts(
-            config.model_path,
-            model_version=config.model_version,
-            model_name=config.model_name,
-        )
-        self.model_metadata = load_model_metadata(self.metadata_path) or self._build_fallback_metadata()
-        self.model = self._load_model(self.model_path)
+        self.metadata_path = None
+        if config.model_source == "mlflow":
+            self.model_path = Path(f"models:/{config.model_name}@{config.mlflow_model_alias}")
+            self.model_metadata = load_mlflow_model_metadata(
+                model_name=str(config.model_name),
+                tracking_uri=config.mlflow_tracking_uri,
+                model_alias=config.mlflow_model_alias,
+            )
+            self.model = self._load_mlflow_model()
+        else:
+            self.model_path, self.metadata_path = resolve_model_artifacts(
+                config.model_path,
+                model_version=config.model_version,
+                model_name=config.model_name,
+            )
+            self.model_metadata = load_model_metadata(self.metadata_path) or self._build_fallback_metadata()
+            self.model = self._load_model(self.model_path)
         self.id_to_label = config.id_to_label
 
     def _load_model(self, model_path: Path):
         LOGGER.info("Loading serving model from %s", model_path)
         with model_path.open("rb") as handle:
             return pickle.load(handle)
+
+    def _load_mlflow_model(self):
+        LOGGER.info(
+            "Loading serving model from MLflow alias %s for model %s",
+            self.config.mlflow_model_alias,
+            self.config.model_name,
+        )
+        return load_mlflow_model(
+            model_name=str(self.config.model_name),
+            tracking_uri=self.config.mlflow_tracking_uri,
+            model_alias=self.config.mlflow_model_alias,
+        )
 
     def _build_fallback_metadata(self) -> dict[str, Any]:
         return {
@@ -145,9 +187,30 @@ class ModelPredictor:
         return dict(self.model_metadata)
 
     def list_registered_models(self) -> list[dict[str, Any]]:
+        if self.config.model_source == "mlflow":
+            return list_mlflow_registered_models(
+                model_name=str(self.config.model_name),
+                tracking_uri=self.config.mlflow_tracking_uri,
+                model_alias=self.config.mlflow_model_alias,
+            )
         return list_registered_models(self.config.model_path, model_name=self.config.model_name)
 
     def activate_model_version(self, model_version: str) -> dict[str, Any]:
+        if self.config.model_source == "mlflow":
+            metadata = activate_mlflow_model_alias(
+                model_name=str(self.config.model_name),
+                model_version=model_version,
+                tracking_uri=self.config.mlflow_tracking_uri,
+                model_alias=self.config.mlflow_model_alias,
+            )
+            refreshed = ModelPredictor(replace(self.config))
+            self.config = refreshed.config
+            self.model_path = refreshed.model_path
+            self.metadata_path = refreshed.metadata_path
+            self.model_metadata = refreshed.model_metadata
+            self.model = refreshed.model
+            self.id_to_label = refreshed.id_to_label
+            return metadata
         metadata = activate_model_version(
             self.config.model_path,
             model_version=model_version,
@@ -197,13 +260,19 @@ class ModelPredictor:
 def create_predictor(config_path: Path = DEFAULT_CONFIG_PATH, config: ServingConfig | None = None) -> ModelPredictor:
     if config is None:
         settings = load_serving_settings(config_path)
+        experiment_settings = build_experiment_tracking_config(load_experiment_tracking_settings(config_path))
         image_size_value = settings.get("image_size", list(DEFAULT_IMAGE_SIZE))
         min_image_size_value = settings.get("min_image_size", list(DEFAULT_MIN_IMAGE_SIZE))
         aspect_ratio_range_value = settings.get("aspect_ratio_range", list(DEFAULT_ASPECT_RATIO_RANGE))
+        remote_enabled = experiment_settings.remote.enabled and bool(experiment_settings.remote.tracking_uri)
+        resolved_model_name = str(settings.get("model_name")) if settings.get("model_name") else None
         config = build_serving_config(
             model_path=Path(settings.get("model_path")) if settings.get("model_path") else None,
-            model_name=str(settings.get("model_name")) if settings.get("model_name") else None,
+            model_name=resolved_model_name,
             model_version=str(settings.get("model_version")) if settings.get("model_version") else None,
+            model_source="mlflow" if remote_enabled and resolved_model_name else "file",
+            mlflow_tracking_uri=experiment_settings.remote.tracking_uri,
+            mlflow_model_alias=str(settings.get("mlflow_model_alias", DEFAULT_MLFLOW_MODEL_ALIAS)),
             image_size=(int(image_size_value[0]), int(image_size_value[1])),
             host=str(settings.get("host", "127.0.0.1")),
             port=int(settings.get("port", 8000)),
